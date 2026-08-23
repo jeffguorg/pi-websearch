@@ -12,6 +12,8 @@ interface SearchArgs {
 	query: string;
 	allowed_domains?: string[];
 	blocked_domains?: string[];
+	use_fallback?: boolean;
+	retry_on_empty?: boolean;
 }
 
 interface ResultLike<TDetails> {

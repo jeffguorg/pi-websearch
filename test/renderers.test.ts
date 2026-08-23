@@ -167,45 +167,23 @@ describe("renderSearchResult", () => {
 	});
 });
 
-describe("renderSearchResult native entry label collapse", () => {
-	it("#given finished details with native-openai entryId #when rendering collapsed summary #then collapses to openai/native", () => {
-		// given
+describe("renderSearchResult native entry label", () => {
+	it("#given finished native details #when rendering #then shows provider/native", () => {
 		const details: SearchDetails = {
 			provider: "openai",
-			entryId: "native-openai-abc123",
+			entryId: "native",
 			query: "native label",
 			results: [{ title: "Native", url: "https://example.com/native", snippet: "snip" }],
 			durationMs: 7,
 			truncated: false,
 			strategy: "priority",
-			attempts: [{ provider: "openai", entryId: "native-openai-abc123", durationMs: 7, resultsCount: 1 }],
+			attempts: [{ provider: "openai", entryId: "native", durationMs: 7, resultsCount: 1 }],
 		};
 
-		// when
-		const rendered = renderSearchResult({ content: [{ type: "text", text: "ok" }], details }, {}, theme)
+		const collapsed = renderSearchResult({ content: [{ type: "text", text: "ok" }], details }, {}, theme)
 			.render(120)
 			.join("\n");
-
-		// then
-		expect(rendered).toContain("via openai/native");
-		expect(rendered).not.toContain("native-openai-abc123");
-	});
-
-	it("#given finished details with native-openai entryId #when rendering expanded route #then collapses route line to openai/native:count", () => {
-		// given
-		const details: SearchDetails = {
-			provider: "openai",
-			entryId: "native-openai-abc123",
-			query: "native label",
-			results: [{ title: "Native", url: "https://example.com/native", snippet: "snip" }],
-			durationMs: 7,
-			truncated: false,
-			strategy: "priority",
-			attempts: [{ provider: "openai", entryId: "native-openai-abc123", durationMs: 7, resultsCount: 1 }],
-		};
-
-		// when
-		const rendered = renderSearchResult(
+		const expanded = renderSearchResult(
 			{ content: [{ type: "text", text: "ok" }], details },
 			{ expanded: true },
 			theme,
@@ -213,8 +191,7 @@ describe("renderSearchResult native entry label collapse", () => {
 			.render(120)
 			.join("\n");
 
-		// then
-		expect(rendered).toContain("route openai/native:1");
-		expect(rendered).not.toContain("native-openai-abc123");
+		expect(collapsed).toContain("via openai/native");
+		expect(expanded).toContain("route openai/native:1");
 	});
 });

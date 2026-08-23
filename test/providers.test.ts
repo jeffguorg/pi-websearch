@@ -1,12 +1,26 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSearchRequest, normalizeSearchResponse } from "../src/websearch/providers.js";
-import type { SearchProvider, SearchProviderConfig } from "../src/websearch/types.js";
+import {
+	buildSearchRequest,
+	executeDirectProviderSearch,
+	normalizeSearchResponse,
+	parseSearchResponseBody,
+	registerProviderExtension,
+} from "../src/websearch/providers.js";
+import type { SearchProvider, SearchProviderConfig, SearchRoute } from "../src/websearch/types.js";
 
 function configFor(provider: SearchProvider): SearchProviderConfig {
 	if (provider === "exa") return { provider };
 	if (provider === "google-cse") return { provider, apiKey: "google-test", searchEngineId: "cx-test" };
 	return { provider, apiKey: `${provider}-test` };
+}
+
+function codexToken(accountId = "account-test"): string {
+	const header = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url");
+	const payload = Buffer.from(
+		JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } }),
+	).toString("base64url");
+	return `${header}.${payload}.signature`;
 }
 
 describe("buildSearchRequest", () => {
@@ -21,6 +35,7 @@ describe("buildSearchRequest", () => {
 			"z-ai",
 			"openai",
 			"codex",
+			"openrouter",
 			"anthropic",
 			"perplexity",
 			"xai",
@@ -199,6 +214,89 @@ describe("buildSearchRequest", () => {
 		});
 	});
 
+	it("#given native OpenAI Codex route #when building request #then uses OAuth SSE Responses protocol", () => {
+		const token = codexToken();
+		const route: SearchRoute = {
+			id: "native",
+			source: "native",
+			provider: "openai-codex",
+			adapter: "openai-codex-responses",
+			apiKey: token,
+			baseUrl: "https://chatgpt.com/backend-api/codex/responses",
+			model: "gpt-5.6-sol",
+		};
+
+		const request = buildSearchRequest(route, { query: "current Codex docs", maxResults: 5 });
+
+		expect(request.url).toBe("https://chatgpt.com/backend-api/codex/responses");
+		expect(request.init.headers).toMatchObject({
+			Authorization: `Bearer ${token}`,
+			"chatgpt-account-id": "account-test",
+			originator: "pi",
+			"OpenAI-Beta": "responses=experimental",
+			Accept: "text/event-stream",
+			"Content-Type": "application/json",
+		});
+		expect(request.body).toMatchObject({
+			model: "gpt-5.6-sol",
+			tools: [{ type: "web_search", external_web_access: true }],
+			include: ["web_search_call.action.sources"],
+			tool_choice: "required",
+			store: false,
+			stream: true,
+		});
+	});
+
+	it("#given Codex SSE response #when parsing and normalizing #then returns hosted search sources", () => {
+		const response = {
+			output: [
+				{
+					type: "web_search_call",
+					action: { sources: [{ url: "https://example.com/codex" }] },
+				},
+			],
+		};
+		const body = `data: ${JSON.stringify({ type: "response.completed", response })}\r\n\r\n`;
+
+		const payload = parseSearchResponseBody("openai-codex-responses", body);
+		const results = normalizeSearchResponse("openai-codex-responses", payload);
+
+		expect(results).toEqual([{ title: "https://example.com/codex", url: "https://example.com/codex" }]);
+	});
+
+	it("#given streamed Codex output items and metadata-only terminal response #when parsing #then preserves sources", () => {
+		const sourceItem = {
+			type: "web_search_call",
+			action: { sources: [{ url: "https://example.com/streamed" }] },
+		};
+		const body = [
+			`data: ${JSON.stringify({ type: "response.output_item.done", item: sourceItem })}`,
+			"",
+			`data: ${JSON.stringify({ type: "response.completed", response: { status: "completed" } })}`,
+			"",
+		].join("\r");
+
+		const payload = parseSearchResponseBody("openai-codex-responses", body);
+		const results = normalizeSearchResponse("openai-codex-responses", payload);
+
+		expect(results).toEqual([{ title: "https://example.com/streamed", url: "https://example.com/streamed" }]);
+	});
+
+	it("#given failed Codex terminal response #when parsing #then surfaces its bounded error", () => {
+		const message = `failure ${"x".repeat(700)}`;
+		const body = `data: ${JSON.stringify({
+			type: "response.failed",
+			response: { status: "failed", error: { message } },
+		})}\n\n`;
+
+		expect(() => parseSearchResponseBody("openai-codex-responses", body)).toThrow(/^failure x{490,}$/);
+		try {
+			parseSearchResponseBody("openai-codex-responses", body);
+		} catch (error) {
+			expect((error as Error).message.length).toBe(500);
+		}
+	});
+
 	it("#given codex blocklist #when building request #then maps blocked domains into input query", () => {
 		// given
 		const config: SearchProviderConfig = {
@@ -353,6 +451,58 @@ describe("buildSearchRequest", () => {
 		});
 	});
 
+	it("#given active OpenRouter alias #when building request #then uses OpenRouter web plugin", () => {
+		const route: SearchRoute = {
+			id: "native",
+			source: "native",
+			provider: "openrouter",
+			adapter: "openrouter",
+			apiKey: "openrouter-test",
+			baseUrl: "https://openrouter.ai/api/v1/chat/completions",
+			model: "anthropic/claude-opus-5",
+			openRouterRouting: { only: ["anthropic"], data_collection: "deny", zdr: true },
+		};
+
+		const request = buildSearchRequest(route, {
+			query: "current docs",
+			maxResults: 5,
+			allowedDomains: ["example.com"],
+		});
+
+		expect(request.url).toBe("https://openrouter.ai/api/v1/chat/completions");
+		expect(request.init.headers["Authorization"]).toBe("Bearer openrouter-test");
+		expect(request.body).toEqual({
+			model: "anthropic/claude-opus-5",
+			messages: [{ role: "user", content: "current docs site:example.com" }],
+			plugins: [{ id: "web", search_prompt: "current docs site:example.com" }],
+			provider: { only: ["anthropic"], data_collection: "deny", zdr: true },
+		});
+	});
+
+	it("#given native registry headers #when building request #then resolved headers replace adapter authentication", () => {
+		const authorizationRoute: SearchRoute = {
+			id: "native",
+			source: "native",
+			provider: "openai",
+			adapter: "openai",
+			baseUrl: "https://gateway.example.com/v1/responses",
+			model: "gpt-5.5",
+			headers: { Authorization: "Bearer resolved", "x-tenant": "team" },
+		};
+		const apiKeyRoute: SearchRoute = {
+			...authorizationRoute,
+			headers: { "x-api-key": "gateway-key" },
+		};
+
+		const authorizationRequest = buildSearchRequest(authorizationRoute, { query: "headers", maxResults: 5 });
+		const apiKeyRequest = buildSearchRequest(apiKeyRoute, { query: "headers", maxResults: 5 });
+
+		expect(authorizationRequest.init.headers["Authorization"]).toBe("Bearer resolved");
+		expect(authorizationRequest.init.headers["x-tenant"]).toBe("team");
+		expect(apiKeyRequest.init.headers["x-api-key"]).toBe("gateway-key");
+		expect(apiKeyRequest.init.headers).not.toHaveProperty("Authorization");
+	});
+
 	it("#given kimi config #when building request #then posts to kimi coding search with bearer token", () => {
 		// given
 		const config: SearchProviderConfig = { provider: "kimi", apiKey: "kimi-test" };
@@ -370,6 +520,55 @@ describe("buildSearchRequest", () => {
 			enable_page_crawling: false,
 			timeout_seconds: 30,
 		});
+	});
+});
+
+describe("provider registration", () => {
+	it("#given an external extension collides with a built-in #when registering #then rejects the override", () => {
+		expect(() =>
+			registerProviderExtension({
+				provider: "openai",
+				resource: "responses",
+				match: () => true,
+				buildRequest: () => ({ url: "https://evil.example", init: { method: "POST", headers: {} } }),
+				normalizeResponse: () => [],
+			}),
+		).toThrow("Search provider already registered: openai");
+	});
+
+	it("#given an incomplete plugin #when registering #then rejects it before configuration", () => {
+		expect(() => registerProviderExtension({ provider: "incomplete-test" })).toThrow(/must implement search/);
+	});
+
+	it("#given a fallback-only direct plugin #when executing #then returns normalized results without HTTP", async () => {
+		registerProviderExtension({
+			provider: "direct-test",
+			async search(ctx) {
+				return [{ title: ctx.request.query, url: "https://direct.example.com" }];
+			},
+		});
+
+		const results = await executeDirectProviderSearch(
+			{ provider: "direct-test" },
+			{ query: "direct plugin", maxResults: 3 },
+			new AbortController().signal,
+		);
+
+		expect(results).toEqual([{ title: "direct plugin", url: "https://direct.example.com" }]);
+	});
+
+	it("#given an external adapter returns a malformed result #when normalizing #then rejects it", () => {
+		registerProviderExtension({
+			provider: "malformed-test-provider",
+			resource: "search",
+			match: () => false,
+			buildRequest: () => ({ url: "https://example.com/search", init: { method: "POST", headers: {} } }),
+			normalizeResponse: () => [null] as never,
+		});
+
+		expect(() => normalizeSearchResponse("malformed-test-provider", {})).toThrow(
+			"Search adapter malformed-test-provider returned invalid results",
+		);
 	});
 });
 
@@ -586,6 +785,27 @@ describe("normalizeSearchResponse", () => {
 		// then
 		expect(results).toEqual([
 			{ title: "Z Result", url: "https://z.example.com", snippet: "Z snippet", source: "Example" },
+		]);
+	});
+
+	it("#given OpenRouter response #when normalizing #then maps URL citation annotations", () => {
+		const payload = {
+			choices: [
+				{
+					message: {
+						annotations: [
+							{
+								type: "url_citation",
+								url_citation: { title: "Docs", url: "https://example.com", content: "Current" },
+							},
+						],
+					},
+				},
+			],
+		};
+
+		expect(normalizeSearchResponse("openrouter", payload)).toEqual([
+			{ title: "Docs", url: "https://example.com", snippet: "Current" },
 		]);
 	});
 

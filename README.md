@@ -1,6 +1,6 @@
 # pi-websearch
 
-Provider-backed `web_search` tool for pi. It starts with zero configuration: OpenAI and Anthropic sessions defer silently to senpi's built-in provider-native web search, while other providers use the built-in DuckDuckGo HTML backend unless a config file overrides it.
+Provider-backed `web_search` tool for pi. It starts with zero configuration: supported active models use their own provider-native search, and all other models use DuckDuckGo HTML unless a config file overrides the fallback backend.
 
 ## Tool Schema
 
@@ -10,11 +10,15 @@ The public tool schema matches free-code:
 {
 	"query": "The search query to use",
 	"allowed_domains": ["example.com"],
-	"blocked_domains": ["spam.example.com"]
+	"blocked_domains": ["spam.example.com"],
+	"use_fallback": false,
+	"retry_on_empty": false
 }
 ```
 
 Only `query` is required. `allowed_domains` and `blocked_domains` are mutually exclusive for a single tool call. Result limits are configured per provider, not exposed in the tool schema.
+
+Fallback is explicitly authorized per call. `use_fallback` defaults to `false`; when true, an operational failure advances to the next configured route. A successful empty response is returned immediately and is never labeled as a failure. Set both `use_fallback: true` and `retry_on_empty: true` to continue after an empty response.
 
 ## Configuration
 
@@ -39,27 +43,42 @@ Example override:
 
 Legacy configs that use `"provider"` instead of `"backend"` continue to work.
 
-Multiple provider entries enable fallback and routing:
+`fallback_chain` is the ordered set of configured routes considered after native search, or as the primary chain when no native route matches:
 
 ```json
 {
 	"strategy": "priority",
-	"fallback": true,
 	"auto": true,
-	"providers": [
+	"fallback_chain": [
 		{
-			"id": "brave-search",
-			"provider": "brave",
+			"id": "tavily",
+			"provider": "tavily",
 			"apiKey": "<local-only-key>",
 			"priority": 10,
 			"maxResults": 8
 		},
 		{
-			"id": "exa-search",
-			"provider": "exa",
-			"apiKey": "<local-only-key>",
-			"priority": 10,
-			"maxResults": 8
+			"id": "zhipu-mcp",
+			"provider": "zhipu-mcp",
+			"optional": true,
+			"priority": 20
+		},
+		{
+			"id": "minimax-mcp",
+			"provider": "minimax-mcp",
+			"optional": true,
+			"priority": 30
+		},
+		{
+			"id": "external-command",
+			"provider": "external-command",
+			"optional": true,
+			"priority": 40
+		},
+		{
+			"id": "ddg",
+			"provider": "duckduckgo-html",
+			"priority": 50
 		}
 	]
 }
@@ -67,29 +86,29 @@ Multiple provider entries enable fallback and routing:
 
 ### Native auto-route
 
-If the active model provider is `openai` or `anthropic`, pi-websearch registers no startup warning and defers to senpi's built-in `openai-web-search` or `anthropic-web-search` extension. Those built-ins wire the provider-native tool directly into supported model requests, so this extension only handles non-native providers and explicit override configs.
+When `auto` is `true` (the default) and the active pi model exposes a server-hosted search tool, the extension resolves one implicit `{ id: "native", ... }` route from `ExtensionContext.model` and its credentials from `ExtensionContext.modelRegistry.getApiKeyAndHeaders`. It never scans other available models and never borrows another provider's credentials. Switching models changes the route on the next tool call without a reload.
 
-When `auto` is `true` (the default) and the active pi model exposes a server-hosted search tool, the extension prepends an implicit `{ id: "native", ... }` entry that reuses the model's resolved API key via `ExtensionContext.modelRegistry.getApiKeyAndHeaders`. The native entry tries first; on failure or when the model does not match, the configured providers handle the search. Disable with `"auto": false` if you want only the explicit `providers` list.
+A matched native route is always attempted first. By default it remains exclusive because `use_fallback` defaults to `false`. A call with `use_fallback: true` may continue through `fallback_chain` after a native authentication, endpoint, adapter, timeout, or request failure. Empty native results stop successfully unless that same call also sets `retry_on_empty: true`. When no native route matches, the first available configured entry is the primary route.
 
 Models that activate native routing (Q1 2026):
 
 - `openai`: any id matching `/^gpt-(4o|4\.1|5)/` that does not contain `codex` — e.g. `gpt-5.6-sol`, `gpt-5.5`, `gpt-5.4`, `gpt-5-pro`, `gpt-4.1-mini`, `gpt-4o-mini`; excludes `gpt-5.3-codex` / `gpt-5.3-codex-spark` and non-matching ids such as `gpt-4-turbo` or the o-series.
+- `openai-codex`: models using `api: "openai-codex-responses"`. Requests use the active Pi OAuth token and ChatGPT account ID against `/backend-api/codex/responses`, with `store: false`, `stream: true`, and the hosted `web_search` tool.
 - `anthropic`: any `claude-*` id (opus/sonnet/haiku/fable, dated or undated).
 - `xai`: any `grok-*`.
 - `perplexity`: any `sonar*` (search is intrinsic to Sonar models).
 - `z-ai` or `zai`: any `glm-*`.
 - `kimi-coding`: the `kimi-coding` provider (routes to the Kimi search endpoint).
-- `openrouter`: any `<provider>/<model>` whose `<provider>` and `<model>` match one of the rows above (for example `openai/gpt-5.5` or `anthropic/claude-opus-4-7`).
+- `deepseek`: the `deepseek` provider only when the model API is `anthropic-messages`. It routes to DeepSeek's Anthropic-compatible endpoint using `web_search_20260209`.
+- `openrouter`: any `<provider>/<model>` whose upstream provider and model match one of the supported rows above. Requests stay on the active OpenRouter Chat Completions transport and use its `web` plugin; output is labeled `openrouter/native`, not as the upstream provider.
 
-A model that matches but whose endpoint rejects the server-side search tool simply fails that attempt and the configured providers take over (default `fallback: true`).
+The native entry inherits `model.baseUrl` from `ExtensionContext.model`, so any local gateway override registered in the pi model registry is honored. Standard endpoints append `/v1/<resource>` when needed; Codex endpoints append `/codex/responses` without inserting `/v1`.
 
-The native entry inherits `model.baseUrl` from `ExtensionContext.model`, so any local gateway override registered in the pi model registry is honored. The endpoint path is appended automatically: if `baseUrl` already ends with `/v1`, only the resource segment is added; otherwise `/v1/<resource>` is appended.
+Routing strategies order `fallback_chain`; native search, when present, is prepended to that order:
 
-Routing strategies:
-
-- `priority`: try lower `priority` values first, falling back in order when `fallback` is `true`.
-- `round-robin`: rotate the first provider per search; optional `weight` repeats entries in the rotation.
-- `fill-first`: collect unique results across providers until the requested result count is filled.
+- `priority`: try configured providers by ascending `priority`.
+- `round-robin`: rotate configured providers.
+- `fill-first`: collect unique results from configured providers until the limit is filled.
 
 ### Progress rendering
 
@@ -106,7 +125,9 @@ Searching "q" via duckduckgo-html/backup (max 10)
 route exa/primary:failed -> duckduckgo-html/backup:searching -> brave/extra:pending
 ```
 
-Discovered provider-native entries collapse to `provider/native` (an entry whose id is `native-openai-<fingerprint>` renders as `openai/native`). The finished render keeps the same `provider/id` spelling, e.g. `5 results via duckduckgo-html/backup (priority) in 320ms`, plus a `route ...` line of completed attempt states when expanded.
+The active native route renders as `<active-provider>/native`, while configured routes render as `provider/id`. The finished render keeps the same spelling, e.g. `5 results via duckduckgo-html/backup (priority) in 320ms`, plus a `route ...` line of completed attempt states when expanded.
+
+An optional entry can use `"optional": true`. If its provider plugin is not installed or its required API key is absent, the entry is omitted instead of invalidating the whole config. This is useful for machine-specific MCP or command bridges before a final `duckduckgo-html` entry.
 
 Supported providers:
 
@@ -118,14 +139,52 @@ Supported providers:
 - `google-cse`: Google Custom Search JSON API. Requires `apiKey` and `searchEngineId`.
 - `z-ai`: Z.ai web search endpoint. Requires `apiKey`.
 - `openai`: OpenAI Responses API hosted `web_search` tool. Requires `apiKey`.
-- `codex`: OpenAI Responses API hosted `web_search` tool. Requires `apiKey`.
+- `codex`: OpenAI Responses API hosted `web_search` tool for explicitly configured API keys; this is separate from `openai-codex` OAuth auto-routing.
+- `openrouter`: OpenRouter Chat Completions with the `web` plugin. Requires `apiKey` when configured explicitly.
 - `anthropic`: Anthropic Messages API with server `web_search_20250305` tool. Requires `apiKey`.
 - `perplexity`: Perplexity Search API. Requires `apiKey`.
 - `xai`: xAI Responses API hosted `web_search` tool. Requires `apiKey`.
+- `deepseek`: DeepSeek's Anthropic-compatible endpoint with the server-side `web_search_20260209` tool. The key is resolved automatically from the active DeepSeek model, so no config entry is required.
 
 Provider-specific optional fields include `id`, `baseUrl`, `model`, `maxResults`, `priority`, `weight`, `searchContextSize`, `codexMode`, `allowedDomains`, `blockedDomains`, and `userLocation` where supported. `baseUrl` is supported for every provider and must be a public HTTPS URL without embedded credentials.
 
 Tool text and TUI output include the selected provider entry, routing strategy, and fallback attempts so the agent can see which provider produced the result.
+
+### Scriptable provider extensions
+
+In addition to the built-in providers, pi-websearch scans a directory of external provider scripts and registers them as first-class providers. A native binding is considered only for the current active model; it cannot trigger discovery of another model or provider.
+
+The default scan directory is `~/.pi/websearch/providers/`. Every `*.ts` / `*.js` file there is dynamically imported; a module that exports a default object (or a named `extension` / `providerExtension`) with the following shape is registered:
+
+```ts
+export default {
+	// Matches the active model to auto-route search to this provider.
+	provider: "myprovider",
+	resource: "chat/completions", // endpoint segment appended to the model baseUrl
+	match: (model) => model.provider === "myprovider", // model: { provider, id, baseUrl, api }
+
+	// Build the HTTP request. ctx.config has baseUrl/apiKey/model; ctx.request has query/domains.
+	buildRequest: ({ config, request }) => ({
+		url: config.baseUrl,
+		init: { method: "POST", headers: { "Content-Type": "application/json" } },
+		body: { model: config.model, messages: [{ role: "user", content: request.query }], /* ... */ },
+	}),
+	// Turn the JSON response into SearchResultItem[] ({ title, url, snippet }).
+	normalizeResponse: (data) => [],
+};
+```
+
+External scripts should be dependency-free (no imports) so they load in any runtime. A native binding supplies both `match` and `resource`; its predicate should check both the provider and, when needed, the model's `api` protocol (`anthropic-messages`, `openai-responses`, `openai-completions`, ...). Built-in native routing is checked before external `match` predicates, so a built-in row always wins for overlapping models.
+
+A fallback-only plugin may omit `match`, `resource`, `buildRequest`, and `normalizeResponse` and implement `async search(ctx, signal)` instead. This direct adapter is the supported bridge for an MCP client or a safely bounded external command. Pi 0.84 exposes registered MCP tool metadata but no public API for one extension to invoke another tool, so pi-websearch cannot reuse `mcp_<server>_<tool>` registrations directly; an MCP plugin must own its MCP client and call `tools/call` itself. Command plugins should use a fixed executable and argv (`shell: false`), bounded JSON over stdin/stdout, a timeout/abort signal, and no model-controlled command string.
+
+Examples:
+
+- `examples/providers/nutstore.ts`: native Nutstore/OpenRouter bridge.
+- `examples/providers/minimax-coding-plan.ts`: fallback-only MiniMax Coding Plan search using its documented `/v1/coding_plan/search` endpoint. Copy it into `~/.pi/websearch/providers/` and set `MINIMAX_API_KEY` plus `MINIMAX_API_HOST`.
+- `examples/providers/external-command.ts`: fallback-only, fixed-executable JSON-stdin bridge. Copy it into `~/.pi/websearch/providers/` and set `PI_WEBSEARCH_EXECUTABLE` to an absolute, trusted executable path.
+
+The built-in `z-ai` HTTP adapter already exposes Zhipu/GLM web search, so an MCP process is not required for that service. A separate Zhipu MCP bridge can still be registered as an optional direct plugin if its MCP-specific credentials or quota are desired.
 
 ## Commands
 

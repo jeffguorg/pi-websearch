@@ -1,24 +1,25 @@
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { loadWebsearchConfig } from "./websearch/config.js";
+import { loadExternalProviderExtensions } from "./websearch/providers.js";
 import { providerEntryLabel } from "./websearch/search.js";
 import { createWebSearchTool } from "./websearch/tool.js";
 import type { ConfigLoadResult, WebsearchConfig } from "./websearch/types.js";
 
+/** Directory scanned for external (scriptable) provider extensions. */
+const EXTERNAL_PROVIDERS_DIR = join(homedir(), ".pi", "websearch", "providers");
+
 const STATUS_KEY = "pi-websearch";
 const WIDGET_KEY = "pi-websearch";
-const NATIVE_BYPASS_MESSAGE = "Native provider web search is handled by the built-in provider extension.";
 
-type ProviderModelContext = {
-	provider?: string;
-	api?: string;
-};
+export default async function (pi: ExtensionAPI): Promise<void> {
+	// Load external provider scripts (e.g. ~/.pi/websearch/providers/nutstore.ts)
+	// before registering the tool so validation + native routing know about them.
+	await loadExternalProviderExtensions(EXTERNAL_PROVIDERS_DIR);
 
-function isProviderNativeBypass(model: ProviderModelContext | undefined): boolean {
-	return model?.provider === "openai" || model?.provider === "anthropic";
-}
-
-export default function (pi: ExtensionAPI): void {
 	let state: ConfigLoadResult = {
 		ok: false,
 		reason: "missing_config",
@@ -41,10 +42,6 @@ export default function (pi: ExtensionAPI): void {
 			clearUi(ctx);
 			return;
 		}
-		if (state.reason === "provider_native_bypass") {
-			clearUi(ctx);
-			return;
-		}
 		clearUi(ctx);
 		ctx.ui.notify(state.message, "error");
 	}
@@ -52,9 +49,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerTool(createWebSearchTool(() => state));
 
 	pi.on("session_start", async (_event, ctx) => {
-		state = isProviderNativeBypass(ctx.model)
-			? { ok: false, reason: "provider_native_bypass", message: NATIVE_BYPASS_MESSAGE }
-			: await loadWebsearchConfig({ cwd: ctx.cwd });
+		state = await loadWebsearchConfig({ cwd: ctx.cwd });
 		updateUi(ctx);
 	});
 
@@ -77,12 +72,7 @@ export default function (pi: ExtensionAPI): void {
 				);
 				return;
 			}
-			ctx.ui.notify(
-				state.reason === "provider_native_bypass"
-					? `Web search deferred: ${state.message}`
-					: `Web search inactive: ${state.message}`,
-				state.reason === "provider_native_bypass" ? "info" : "error",
-			);
+			ctx.ui.notify(`Web search inactive: ${state.message}`, "error");
 		},
 	});
 }

@@ -1,7 +1,7 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-import { buildNativeEntries, type NativeModelInfo, type NativeModelRegistry } from "./native.js";
+import { type NativeModelInfo, type NativeModelRegistry, resolveNativeEntry } from "./native.js";
 import { renderSearchCall, renderSearchResult } from "./renderers.js";
 import {
 	createSearchRoutingState,
@@ -15,17 +15,33 @@ import type {
 	SearchErrorDetails,
 	SearchProgressDetails,
 	SearchRenderDetails,
-	WebsearchConfig,
+	SearchRoute,
 } from "./types.js";
 
 const Params = Type.Object(
 	{
-		query: Type.String({ minLength: 2, description: "The search query to use" }),
+		query: Type.String({ minLength: 2, maxLength: 2000, description: "The search query to use" }),
 		allowed_domains: Type.Optional(
-			Type.Array(Type.String(), { description: "Only include search results from these domains" }),
+			Type.Array(Type.String({ maxLength: 253 }), {
+				maxItems: 100,
+				description: "Only include search results from these domains",
+			}),
 		),
 		blocked_domains: Type.Optional(
-			Type.Array(Type.String(), { description: "Never include search results from these domains" }),
+			Type.Array(Type.String({ maxLength: 253 }), {
+				maxItems: 100,
+				description: "Never include search results from these domains",
+			}),
+		),
+		use_fallback: Type.Optional(
+			Type.Boolean({
+				description: "Continue through the configured fallback chain when the primary route fails (default: false)",
+			}),
+		),
+		retry_on_empty: Type.Optional(
+			Type.Boolean({
+				description: "Continue to the next fallback after a successful empty result (default: false)",
+			}),
 		),
 	},
 	{ additionalProperties: false },
@@ -39,10 +55,8 @@ interface WebSearchToolContext {
 	modelRegistry: NativeModelRegistry;
 }
 
-async function configWithNativeRoute(config: WebsearchConfig, ctx?: WebSearchToolContext): Promise<WebsearchConfig> {
-	if (!config.auto) return config;
-	const nativeEntries = await buildNativeEntries(ctx?.model, ctx?.modelRegistry);
-	return nativeEntries.length > 0 ? { ...config, providers: [...nativeEntries, ...config.providers] } : config;
+function routeIdentity(route: SearchRoute): string {
+	return [route.source, route.provider, route.adapter, route.id, route.model, route.baseUrl].join(":");
 }
 
 function formatSearchProgressText(details: SearchProgressDetails): string {
@@ -81,12 +95,26 @@ export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
 				return { content: [{ type: "text", text: loaded.message }], details };
 			}
 
-			const maxResults = loaded.config.providers[0]?.maxResults ?? 10;
-			const config = await configWithNativeRoute(loaded.config, ctx);
+			const config = loaded.config;
+			const useFallback = params.use_fallback ?? false;
+			const retryOnEmpty = params.retry_on_empty ?? false;
+			const maxResults = config.providers[0]?.maxResults ?? 10;
+			const nativeResolution = config.auto
+				? await resolveNativeEntry(ctx?.model, ctx?.modelRegistry)
+				: { kind: "unmatched" as const };
+			if (nativeResolution.kind === "error" && !useFallback) {
+				const message = nativeResolution.message;
+				const details = searchErrorDetails(params.query, message);
+				return { content: [{ type: "text", text: message }], details };
+			}
+			const nativeRoute = nativeResolution.kind === "ready" ? nativeResolution.route : null;
 			const progressDetails: SearchProgressDetails = {
 				phase: "searching",
 				query: params.query,
-				providerLabels: config.providers.map(providerEntryLabel),
+				providerLabels: [
+					...(nativeRoute ? [providerEntryLabel(nativeRoute)] : []),
+					...(useFallback || !nativeRoute ? config.providers.map(providerEntryLabel) : []),
+				],
 				maxResults,
 				strategy: config.strategy,
 				...(params.allowed_domains ? { allowedDomains: params.allowed_domains } : {}),
@@ -97,7 +125,16 @@ export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
 				details: progressDetails,
 			});
 
-			const nextRoutingKey = `${config.strategy}:${config.providers.map((provider) => provider.id ?? provider.provider).join("|")}`;
+			const configuredIdentity = config.providers.map((provider) =>
+				[provider.provider, provider.id, provider.model, provider.baseUrl, provider.priority, provider.weight].join(
+					":",
+				),
+			);
+			const nextRoutingKey = JSON.stringify({
+				strategy: config.strategy,
+				native: nativeRoute ? routeIdentity(nativeRoute) : null,
+				configured: configuredIdentity,
+			});
 			if (
 				!routingState ||
 				routingKey !== nextRoutingKey ||
@@ -129,6 +166,8 @@ export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
 						details: attemptProgress,
 					});
 				},
+				nativeRoute ?? undefined,
+				{ useFallback, retryOnEmpty },
 			);
 			return { content: [{ type: "text", text: formatSearchText(details) }], details };
 		},

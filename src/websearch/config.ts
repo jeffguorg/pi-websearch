@@ -1,8 +1,8 @@
 import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
 import { isAllowedProviderBaseUrl } from "./provider-endpoints.js";
+import { isExternalProvider, isRegisteredProvider } from "./providers.js";
 import type {
 	CodexSearchMode,
 	ConfigLoadResult,
@@ -11,34 +11,18 @@ import type {
 	ProviderValidationResult,
 	RoutingStrategy,
 	SearchContextSize,
-	SearchProvider,
 	SearchProviderConfig,
 	SearchProviderEntry,
 	SearchUserLocation,
 	WebsearchConfig,
 } from "./types.js";
 
-const PROVIDERS: readonly SearchProvider[] = [
-	"exa",
-	"tavily",
-	"brave",
-	"duckduckgo-html",
-	"serper",
-	"google-cse",
-	"z-ai",
-	"openai",
-	"codex",
-	"anthropic",
-	"perplexity",
-	"xai",
-	"kimi",
-];
 const CONTEXT_SIZES: readonly SearchContextSize[] = ["low", "medium", "high"];
 const CODEX_MODES: readonly CodexSearchMode[] = ["cached", "live"];
 const STRATEGIES: readonly RoutingStrategy[] = ["priority", "round-robin", "fill-first"];
 const DEFAULT_FREE_CONFIG: WebsearchConfig = {
 	strategy: "priority",
-	fallback: true,
+	fallback: false,
 	auto: true,
 	providers: [{ id: "default", provider: "duckduckgo-html", maxResults: 10 }],
 };
@@ -72,8 +56,8 @@ function optionalBoolean(value: JsonValue | undefined): boolean | undefined {
 	return typeof value === "boolean" ? value : undefined;
 }
 
-function optionalProvider(value: JsonValue | undefined): SearchProvider | undefined {
-	return oneOf(PROVIDERS, value) ? value : undefined;
+function optionalProvider(value: JsonValue | undefined): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function optionalContextSize(value: JsonValue | undefined): SearchContextSize | undefined {
@@ -86,6 +70,18 @@ function optionalCodexMode(value: JsonValue | undefined): CodexSearchMode | unde
 
 function optionalStrategy(value: JsonValue | undefined): RoutingStrategy | undefined {
 	return oneOf(STRATEGIES, value) ? value : undefined;
+}
+
+function validOptionalString(raw: JsonObject, key: string): boolean {
+	return !(key in raw) || (typeof raw[key] === "string" && raw[key].length > 0);
+}
+
+function validOptionalNumber(raw: JsonObject, key: string): boolean {
+	return !(key in raw) || (typeof raw[key] === "number" && Number.isFinite(raw[key]));
+}
+
+function validOptionalStringArray(raw: JsonObject, key: string): boolean {
+	return !(key in raw) || isStringArray(raw[key]);
 }
 
 function optionalLocation(value: JsonValue | undefined): SearchUserLocation | undefined {
@@ -113,6 +109,20 @@ function parseJsonObject(content: string): JsonObject | null {
 }
 
 function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
+	const stringFields = ["id", "apiKey", "baseUrl", "searchEngineId", "model"];
+	const numberFields = ["maxResults", "timeoutMs", "priority", "weight"];
+	if (
+		stringFields.some((key) => !validOptionalString(raw, key)) ||
+		numberFields.some((key) => !validOptionalNumber(raw, key)) ||
+		!["allowedDomains", "blockedDomains"].every((key) => validOptionalStringArray(raw, key)) ||
+		("optional" in raw && typeof raw["optional"] !== "boolean") ||
+		("codexMode" in raw && !oneOf(CODEX_MODES, raw["codexMode"])) ||
+		("searchContextSize" in raw && !oneOf(CONTEXT_SIZES, raw["searchContextSize"])) ||
+		("userLocation" in raw && !isJsonObject(raw["userLocation"])) ||
+		("openRouterRouting" in raw && !isJsonObject(raw["openRouterRouting"]))
+	) {
+		return null;
+	}
 	const provider = optionalProvider(raw["provider"]) ?? optionalProvider(raw["backend"]);
 	if (!provider) return null;
 
@@ -130,9 +140,11 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 	const allowedDomains = isStringArray(rawAllowedDomains) ? rawAllowedDomains : undefined;
 	const blockedDomains = isStringArray(rawBlockedDomains) ? rawBlockedDomains : undefined;
 	const userLocation = optionalLocation(raw["userLocation"]);
+	const openRouterRouting = isJsonObject(raw["openRouterRouting"]) ? raw["openRouterRouting"] : undefined;
 	const timeoutMs = optionalNumber(raw["timeoutMs"]);
 	const priority = optionalNumber(raw["priority"]);
 	const weight = optionalNumber(raw["weight"]);
+	const optional = optionalBoolean(raw["optional"]);
 
 	if (id) config.id = id;
 	if (apiKey) config.apiKey = apiKey;
@@ -145,29 +157,47 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 	if (allowedDomains) config.allowedDomains = allowedDomains;
 	if (blockedDomains) config.blockedDomains = blockedDomains;
 	if (userLocation) config.userLocation = userLocation;
+	if (openRouterRouting) config.openRouterRouting = openRouterRouting;
 	if (timeoutMs !== undefined) config.timeoutMs = timeoutMs;
 	if (priority !== undefined) config.priority = priority;
 	if (weight !== undefined) config.weight = weight;
+	if (optional !== undefined) config.optional = optional;
 
 	return config;
 }
 
 function configFromObject(raw: JsonObject): WebsearchConfig | null {
+	if (
+		("auto" in raw && typeof raw["auto"] !== "boolean") ||
+		("fallback" in raw && typeof raw["fallback"] !== "boolean") ||
+		("strategy" in raw && !oneOf(STRATEGIES, raw["strategy"])) ||
+		("providers" in raw && !Array.isArray(raw["providers"])) ||
+		("fallback_chain" in raw && !Array.isArray(raw["fallback_chain"]))
+	) {
+		return null;
+	}
 	const auto = optionalBoolean(raw["auto"]) ?? true;
 	const providersValue = raw["providers"];
-	const rawProviders = Array.isArray(providersValue) ? providersValue : undefined;
+	const fallbackChainValue = raw["fallback_chain"];
+	if (providersValue !== undefined && fallbackChainValue !== undefined) return null;
+	const chainValue = fallbackChainValue ?? providersValue;
+	const rawProviders = Array.isArray(chainValue) ? chainValue : undefined;
 	if (rawProviders) {
-		if (optionalProvider(raw["provider"])) return null;
-		const providers = rawProviders
-			.map((value) => (isJsonObject(value) ? providerEntryFromObject(value) : null))
-			.filter((entry): entry is SearchProviderEntry => entry !== null);
+		if (optionalProvider(raw["provider"]) || optionalProvider(raw["backend"])) return null;
+		const parsedProviders = rawProviders.map((value) =>
+			isJsonObject(value) ? providerEntryFromObject(value) : null,
+		);
+		if (parsedProviders.some((entry) => entry === null)) return null;
+		const providers = parsedProviders
+			.filter((entry): entry is SearchProviderEntry => entry !== null)
+			.filter((entry) => isRegisteredProvider(entry.provider) || !entry.optional);
 		const strategy = optionalStrategy(raw["strategy"]) ?? "priority";
-		const fallback = optionalBoolean(raw["fallback"]) ?? true;
+		const fallback = optionalBoolean(raw["fallback"]) ?? false;
 		return { strategy, fallback, auto, providers };
 	}
 
 	const provider = providerEntryFromObject(raw);
-	return provider ? { strategy: "priority", fallback: true, auto, providers: [provider] } : null;
+	return provider ? { strategy: "priority", fallback: false, auto, providers: [provider] } : null;
 }
 
 function hasApiKey(config: SearchProviderConfig): boolean {
@@ -175,7 +205,7 @@ function hasApiKey(config: SearchProviderConfig): boolean {
 }
 
 export function validateProviderConfig(config: SearchProviderEntry): ProviderValidationResult {
-	if (!PROVIDERS.includes(config.provider)) {
+	if (!isRegisteredProvider(config.provider)) {
 		return { ok: false, reason: "invalid_config", message: `Unsupported provider: ${config.provider}` };
 	}
 
@@ -215,12 +245,10 @@ export function validateProviderConfig(config: SearchProviderEntry): ProviderVal
 		};
 	}
 
-	if (
-		config.provider !== "codex" &&
-		config.provider !== "openai" &&
-		config.provider !== "duckduckgo-html" &&
-		!hasApiKey(config)
-	) {
+	// Providers whose key is resolved at request time from the active model
+	// (native routing) don't need an explicit apiKey in config.
+	const NATIVE_KEY_PROVIDERS = new Set(["codex", "openai", "duckduckgo-html"]);
+	if (!NATIVE_KEY_PROVIDERS.has(config.provider) && !isExternalProvider(config.provider) && !hasApiKey(config)) {
 		return { ok: false, reason: "missing_api_key", message: `Provider ${config.provider} requires apiKey.` };
 	}
 
@@ -229,23 +257,36 @@ export function validateProviderConfig(config: SearchProviderEntry): ProviderVal
 
 export function validateWebsearchConfig(
 	config: WebsearchConfig,
-): ProviderValidationResult | { ok: true; config: WebsearchConfig } {
+):
+	| { ok: true; config: WebsearchConfig }
+	| { ok: false; reason: "invalid_config" | "missing_api_key"; message: string } {
 	if (!STRATEGIES.includes(config.strategy)) {
 		return { ok: false, reason: "invalid_config", message: `Unsupported routing strategy: ${config.strategy}` };
 	}
 	if (typeof config.auto !== "boolean") {
 		return { ok: false, reason: "invalid_config", message: "Websearch config auto must be a boolean." };
 	}
+	if (typeof config.fallback !== "boolean") {
+		return { ok: false, reason: "invalid_config", message: "Websearch config fallback must be a boolean." };
+	}
 	if (config.providers.length === 0) {
 		return { ok: false, reason: "invalid_config", message: "Websearch config requires at least one provider." };
 	}
 
+	const availableProviders: SearchProviderEntry[] = [];
 	for (const provider of config.providers) {
 		const validation = validateProviderConfig(provider);
-		if (!validation.ok) return validation;
+		if (!validation.ok) {
+			if (provider.optional && validation.reason === "missing_api_key") continue;
+			return validation;
+		}
+		availableProviders.push(provider);
+	}
+	if (availableProviders.length === 0) {
+		return { ok: false, reason: "invalid_config", message: "Websearch config has no available providers." };
 	}
 
-	return { ok: true, config };
+	return { ok: true, config: { ...config, providers: availableProviders } };
 }
 
 async function fileExists(path: string): Promise<boolean> {
@@ -277,7 +318,7 @@ export async function loadWebsearchConfig(options: ConfigLoadOptions): Promise<C
 		}
 		const validation = validateWebsearchConfig(config);
 		if (!validation.ok) return { ...validation, source: path };
-		return { ok: true, config, source: path };
+		return { ok: true, config: validation.config, source: path };
 	}
 
 	return { ok: true, config: DEFAULT_FREE_CONFIG, source: "default:duckduckgo-html" };

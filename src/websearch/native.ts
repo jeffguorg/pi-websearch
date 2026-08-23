@@ -1,12 +1,14 @@
-import { createHash } from "node:crypto";
-
-import { isAllowedProviderBaseUrl } from "./provider-endpoints.js";
-import type { SearchProvider, SearchProviderEntry } from "./types.js";
+import { isAllowedNativeProviderBaseUrl } from "./provider-endpoints.js";
+import { getExternalBindings } from "./providers.js";
+import type { JsonObject, SearchRoute } from "./types.js";
 
 export interface NativeModelInfo {
 	provider: string;
 	id: string;
 	baseUrl: string;
+	/** The protocol pi uses for this provider (e.g. "openai-completions", "anthropic-messages"). */
+	api?: string;
+	compat?: object;
 }
 
 export type NativeAuthResult =
@@ -15,46 +17,75 @@ export type NativeAuthResult =
 
 export interface NativeModelRegistry {
 	getApiKeyAndHeaders(model: NativeModelInfo): Promise<NativeAuthResult>;
-	getAvailable?(): NativeModelInfo[];
 }
 
-interface NativeProviderMapping {
-	provider: SearchProvider;
+export interface NativeProviderMapping {
+	adapter: string;
 	resource: string;
 }
 
-function nativeMapping(model: NativeModelInfo): NativeProviderMapping | null {
+function directNativeMapping(model: NativeModelInfo): NativeProviderMapping | null {
+	if (model.provider === "openai-codex" && model.api === "openai-codex-responses") {
+		return { adapter: "openai-codex-responses", resource: "codex/responses" };
+	}
+
 	if (model.provider === "openai" && /^gpt-(4o|4\.1|5)/.test(model.id) && !model.id.includes("codex")) {
-		return { provider: "openai", resource: "responses" };
+		return { adapter: "openai", resource: "responses" };
 	}
 
 	if (model.provider === "anthropic" && /^claude-/.test(model.id)) {
-		return { provider: "anthropic", resource: "messages" };
+		return { adapter: "anthropic", resource: "messages" };
 	}
 
-	if (model.provider === "xai" && /^grok-/.test(model.id)) {
-		return { provider: "xai", resource: "responses" };
+	if ((model.provider === "xai" || model.provider === "x-ai") && /^grok-/.test(model.id)) {
+		return { adapter: "xai", resource: "responses" };
 	}
 
 	if (model.provider === "perplexity" && /^sonar/.test(model.id)) {
-		return { provider: "perplexity", resource: "chat/completions" };
+		return { adapter: "perplexity", resource: "chat/completions" };
 	}
 
 	if ((model.provider === "z-ai" || model.provider === "zai") && /^glm-/.test(model.id)) {
-		return { provider: "z-ai", resource: "chat/completions" };
+		return { adapter: "z-ai", resource: "chat/completions" };
 	}
 
 	if (model.provider === "kimi-coding") {
-		return { provider: "kimi", resource: "search" };
+		return { adapter: "kimi", resource: "search" };
 	}
 
+	// The current DeepSeek adapter emits Anthropic Messages payloads. Do not
+	// claim support for OpenAI Responses until a separate adapter exists.
+	if (model.provider === "deepseek" && model.api === "anthropic-messages") {
+		return { adapter: "deepseek", resource: "messages" };
+	}
+
+	return null;
+}
+
+export function nativeMapping(model: NativeModelInfo): NativeProviderMapping | null {
 	if (model.provider === "openrouter") {
 		const slashIndex = model.id.indexOf("/");
 		if (slashIndex <= 0) return null;
 		const effectiveProvider = model.id.slice(0, slashIndex);
 		const effectiveId = model.id.slice(slashIndex + 1);
 		if (effectiveProvider === "openrouter") return null;
-		return nativeMapping({ ...model, provider: effectiveProvider, id: effectiveId });
+		const upstream = directNativeMapping({ ...model, provider: effectiveProvider, id: effectiveId });
+		return upstream ? { adapter: "openrouter", resource: "chat/completions" } : null;
+	}
+
+	const direct = directNativeMapping(model);
+	if (direct) return direct;
+
+	// External bindings may describe the active provider's native search wire
+	// format. They never cause another model/provider to be discovered.
+	for (const binding of getExternalBindings()) {
+		try {
+			if (binding.provider === model.provider && binding.match?.(model) && binding.resource) {
+				return { adapter: binding.provider, resource: binding.resource };
+			}
+		} catch {
+			// A broken optional binding must not disable configured fallback routes.
+		}
 	}
 
 	return null;
@@ -71,86 +102,135 @@ function buildEndpointUrl(baseUrl: string, resource: string): string {
 	const resourceSlash = `/${resource}`;
 	if (trimmedPath.endsWith(resourceSlash)) {
 		configured.pathname = trimmedPath;
+	} else if (resource === "codex/responses") {
+		configured.pathname = trimmedPath.endsWith("/codex")
+			? `${trimmedPath}/responses`
+			: `${trimmedPath}${resourceSlash}`;
 	} else if (/\/v\d+$/.test(trimmedPath)) {
 		configured.pathname = `${trimmedPath}${resourceSlash}`;
 	} else {
 		configured.pathname = `${trimmedPath}/v1${resourceSlash}`;
 	}
 	configured.hash = "";
+	configured.search = "";
 	return configured.href;
 }
 
-function nativeRouteKey(model: NativeModelInfo): string | null {
-	const mapping = nativeMapping(model);
-	if (!mapping) return null;
-	const baseUrl = buildEndpointUrl(model.baseUrl, mapping.resource);
-	if (!isAllowedProviderBaseUrl(baseUrl)) return null;
-	return `${mapping.provider}|${new URL(baseUrl).href}`;
+function isAllowedCodexEndpoint(baseUrl: string): boolean {
+	try {
+		const url = new URL(baseUrl);
+		return url.origin === "https://chatgpt.com" && url.pathname === "/backend-api/codex/responses";
+	} catch {
+		return false;
+	}
 }
 
-function discoveredNativeEntryId(provider: SearchProvider, routeKey: string): string {
-	const routeFingerprint = createHash("sha256").update(routeKey).digest("hex").slice(0, 16);
-	return `native-${provider}-${routeFingerprint}`;
+function isJsonObject(value: unknown): value is JsonObject {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function buildNativeEntryForModel(
+function activeOpenRouterRouting(model: NativeModelInfo): JsonObject | undefined {
+	const compat = model.compat;
+	if (!compat || !("openRouterRouting" in compat)) return undefined;
+	return isJsonObject(compat.openRouterRouting) ? compat.openRouterRouting : undefined;
+}
+
+function hasResolvedAuthentication(auth: Extract<NativeAuthResult, { ok: true }>): boolean {
+	if (auth.apiKey) return true;
+	const authHeaderNames = new Set(["authorization", "x-api-key", "api-key", "x-goog-api-key"]);
+	return Object.entries(auth.headers ?? {}).some(
+		([name, value]) => authHeaderNames.has(name.toLowerCase()) && value.trim().length > 0,
+	);
+}
+
+function bearerToken(headers: Record<string, string> | undefined): string | undefined {
+	const authorization = Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "authorization")?.[1];
+	const match = authorization?.match(/^Bearer\s+(.+)$/i);
+	return match?.[1]?.trim() || undefined;
+}
+
+export type NativeRouteResolution =
+	| { kind: "unmatched" }
+	| { kind: "ready"; route: SearchRoute }
+	| { kind: "error"; provider: string; message: string };
+
+/** Resolve at most one native route, exclusively from the active model. */
+export async function resolveNativeEntry(
 	model: NativeModelInfo | undefined,
 	modelRegistry: NativeModelRegistry | undefined,
 	id = "native",
-): Promise<SearchProviderEntry | null> {
-	if (!model || !modelRegistry) return null;
+): Promise<NativeRouteResolution> {
+	if (!model) return { kind: "unmatched" };
 
 	const mapping = nativeMapping(model);
-	if (!mapping) return null;
+	if (!mapping) return { kind: "unmatched" };
+	if (!modelRegistry) {
+		return { kind: "error", provider: model.provider, message: "Native search authentication is unavailable" };
+	}
 	const baseUrl = buildEndpointUrl(model.baseUrl, mapping.resource);
-	if (!isAllowedProviderBaseUrl(baseUrl)) return null;
+	if (
+		!isAllowedNativeProviderBaseUrl(baseUrl) ||
+		(mapping.adapter === "openai-codex-responses" && !isAllowedCodexEndpoint(baseUrl))
+	) {
+		return {
+			kind: "error",
+			provider: model.provider,
+			message: `Native search endpoint is invalid for ${model.provider}/${model.id}`,
+		};
+	}
 
-	const auth = await modelRegistry.getApiKeyAndHeaders(model);
-	if (!auth.ok || !auth.apiKey) return null;
+	let auth: NativeAuthResult;
+	try {
+		auth = await modelRegistry.getApiKeyAndHeaders(model);
+	} catch {
+		return {
+			kind: "error",
+			provider: model.provider,
+			message: `Native search authentication could not be resolved for ${model.provider}/${model.id}`,
+		};
+	}
+	if (!auth.ok || !hasResolvedAuthentication(auth)) {
+		return {
+			kind: "error",
+			provider: model.provider,
+			message: `Native search authentication could not be resolved for ${model.provider}/${model.id}`,
+		};
+	}
+	const openRouterRouting = model.provider === "openrouter" ? activeOpenRouterRouting(model) : undefined;
+	const codexApiKey =
+		mapping.adapter === "openai-codex-responses" ? (auth.apiKey ?? bearerToken(auth.headers)) : undefined;
+	if (mapping.adapter === "openai-codex-responses" && !codexApiKey) {
+		return {
+			kind: "error",
+			provider: model.provider,
+			message: `Native search OAuth token could not be resolved for ${model.provider}/${model.id}`,
+		};
+	}
+	const resolvedApiKey = codexApiKey ?? auth.apiKey;
+	const resolvedHeaders = mapping.adapter === "openai-codex-responses" ? undefined : auth.headers;
 
 	return {
-		id,
-		provider: mapping.provider,
-		apiKey: auth.apiKey,
-		baseUrl,
-		model: model.id,
-		priority: -1,
+		kind: "ready",
+		route: {
+			id,
+			source: "native",
+			provider: model.provider,
+			adapter: mapping.adapter,
+			...(resolvedApiKey ? { apiKey: resolvedApiKey } : {}),
+			...(resolvedHeaders ? { headers: resolvedHeaders } : {}),
+			...(openRouterRouting ? { openRouterRouting } : {}),
+			baseUrl,
+			model: model.id,
+			priority: -1,
+		},
 	};
-}
-export async function buildNativeEntries(
-	model: NativeModelInfo | undefined,
-	modelRegistry: NativeModelRegistry | undefined,
-): Promise<SearchProviderEntry[]> {
-	if (!modelRegistry) return [];
-
-	const entries: SearchProviderEntry[] = [];
-	const seenRoutes = new Set<string>();
-
-	const activeRouteKey = model ? nativeRouteKey(model) : null;
-	if (activeRouteKey) {
-		seenRoutes.add(activeRouteKey);
-		const activeEntry = await buildNativeEntryForModel(model, modelRegistry);
-		if (activeEntry) entries.push(activeEntry);
-	}
-
-	if (!modelRegistry.getAvailable) return entries;
-
-	for (const availableModel of modelRegistry.getAvailable()) {
-		const routeKey = nativeRouteKey(availableModel);
-		if (!routeKey || seenRoutes.has(routeKey)) continue;
-		seenRoutes.add(routeKey);
-		const entry = await buildNativeEntryForModel(availableModel, modelRegistry, "native-discovered");
-		if (!entry) continue;
-		entries.push({ ...entry, id: discoveredNativeEntryId(entry.provider, routeKey) });
-	}
-
-	return entries;
 }
 
 export async function buildNativeEntry(
 	model: NativeModelInfo | undefined,
 	modelRegistry: NativeModelRegistry | undefined,
 	id = "native",
-): Promise<SearchProviderEntry | null> {
-	return buildNativeEntryForModel(model, modelRegistry, id);
+): Promise<SearchRoute | null> {
+	const resolution = await resolveNativeEntry(model, modelRegistry, id);
+	return resolution.kind === "ready" ? resolution.route : null;
 }

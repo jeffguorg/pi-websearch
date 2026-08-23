@@ -1,93 +1,73 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { buildNativeEntry, type NativeModelInfo, type NativeModelRegistry } from "../src/websearch/native.js";
-import type { SearchProvider } from "../src/websearch/types.js";
+import {
+	buildNativeEntry,
+	type NativeModelInfo,
+	type NativeModelRegistry,
+	nativeMapping,
+} from "../src/websearch/native.js";
 
-function model(provider: string, id: string, baseUrl = "https://gateway.example.com/v1"): NativeModelInfo {
-	return { provider, id, baseUrl };
+function model(
+	provider: string,
+	id: string,
+	baseUrl = "https://gateway.example.com/v1",
+	api?: string,
+): NativeModelInfo {
+	return { provider, id, baseUrl, ...(api ? { api } : {}) };
 }
 
-function registry(apiKey = "native-test"): NativeModelRegistry {
+function registry(
+	result: Awaited<ReturnType<NativeModelRegistry["getApiKeyAndHeaders"]>> = {
+		ok: true,
+		apiKey: "native-test",
+	},
+): NativeModelRegistry {
 	return {
 		async getApiKeyAndHeaders() {
-			return { ok: true, apiKey };
+			return result;
 		},
 	};
 }
 
-describe("buildNativeEntry", () => {
-	it("#given supported native model rows #when building entry #then maps provider and endpoint", async () => {
-		// given
+describe("active native route", () => {
+	it("#given supported active models #when resolving #then preserves transport provenance and selects an adapter", async () => {
 		const cases: Array<{
 			model: NativeModelInfo;
-			provider: SearchProvider;
+			adapter: string;
 			baseUrl: string;
 		}> = [
+			{ model: model("openai", "gpt-5.5"), adapter: "openai", baseUrl: "https://gateway.example.com/v1/responses" },
 			{
-				model: model("openai", "gpt-5.5-fast"),
-				provider: "openai",
-				baseUrl: "https://gateway.example.com/v1/responses",
-			},
-			{
-				model: model("openai", "gpt-4o-mini-2026-01-01"),
-				provider: "openai",
-				baseUrl: "https://gateway.example.com/v1/responses",
-			},
-			{
-				model: model("openai", "gpt-4.1-mini"),
-				provider: "openai",
-				baseUrl: "https://gateway.example.com/v1/responses",
-			},
-			{
-				model: model("anthropic", "claude-sonnet-4-5-20250929"),
-				provider: "anthropic",
+				model: model("anthropic", "claude-opus-5"),
+				adapter: "anthropic",
 				baseUrl: "https://gateway.example.com/v1/messages",
 			},
-			{
-				model: model("anthropic", "claude-opus-4-7", "https://api.anthropic.com"),
-				provider: "anthropic",
-				baseUrl: "https://api.anthropic.com/v1/messages",
-			},
-			{
-				model: model("anthropic", "claude-opus-4-7", "https://anthropic.gateway.example.com/proxy"),
-				provider: "anthropic",
-				baseUrl: "https://anthropic.gateway.example.com/proxy/v1/messages",
-			},
-			{
-				model: model("xai", "grok-4.3"),
-				provider: "xai",
-				baseUrl: "https://gateway.example.com/v1/responses",
-			},
+			{ model: model("xai", "grok-4.3"), adapter: "xai", baseUrl: "https://gateway.example.com/v1/responses" },
 			{
 				model: model("perplexity", "sonar-pro"),
-				provider: "perplexity",
+				adapter: "perplexity",
 				baseUrl: "https://gateway.example.com/v1/chat/completions",
 			},
+			{ model: model("zai", "glm-5"), adapter: "z-ai", baseUrl: "https://gateway.example.com/v1/chat/completions" },
 			{
-				model: model("z-ai", "glm-4.6"),
-				provider: "z-ai",
-				baseUrl: "https://gateway.example.com/v1/chat/completions",
-			},
-			{
-				model: model("zai", "glm-4.6"),
-				provider: "z-ai",
-				baseUrl: "https://gateway.example.com/v1/chat/completions",
-			},
-			{
-				model: model("kimi-coding", "k2p7", "https://api.kimi.com/coding"),
-				provider: "kimi",
+				model: model("kimi-coding", "k3", "https://api.kimi.com/coding"),
+				adapter: "kimi",
 				baseUrl: "https://api.kimi.com/coding/v1/search",
+			},
+			{
+				model: model("deepseek", "deepseek-v4", "https://api.deepseek.com/anthropic/v1", "anthropic-messages"),
+				adapter: "deepseek",
+				baseUrl: "https://api.deepseek.com/anthropic/v1/messages",
 			},
 		];
 
 		for (const testCase of cases) {
-			// when
 			const entry = await buildNativeEntry(testCase.model, registry());
-
-			// then
 			expect(entry).toEqual({
 				id: "native",
-				provider: testCase.provider,
+				source: "native",
+				provider: testCase.model.provider,
+				adapter: testCase.adapter,
 				apiKey: "native-test",
 				baseUrl: testCase.baseUrl,
 				model: testCase.model.id,
@@ -96,181 +76,127 @@ describe("buildNativeEntry", () => {
 		}
 	});
 
-	it("#given missing auth or unsupported model #when building entry #then returns null", async () => {
-		// given
-		const noKeyRegistry: NativeModelRegistry = {
-			async getApiKeyAndHeaders() {
-				return { ok: true };
-			},
-		};
-		const errorRegistry: NativeModelRegistry = {
-			async getApiKeyAndHeaders() {
-				return { ok: false, error: "missing" };
-			},
-		};
+	it("#given an OpenRouter upstream alias #when resolving #then uses OpenRouter transport and provenance", async () => {
+		const entry = await buildNativeEntry(
+			model("openrouter", "anthropic/claude-opus-5", "https://openrouter.ai/api/v1"),
+			registry(),
+		);
 
-		// when / then
-		expect(await buildNativeEntry(undefined, registry())).toBeNull();
-		expect(await buildNativeEntry(model("openai", "gpt-3.5"), registry())).toBeNull();
-		expect(await buildNativeEntry(model("custom", "gpt-5.5"), registry())).toBeNull();
-		expect(await buildNativeEntry(model("openai", "gpt-5.5"), undefined)).toBeNull();
-		expect(await buildNativeEntry(model("openai", "gpt-5.5"), noKeyRegistry)).toBeNull();
-		expect(await buildNativeEntry(model("openai", "gpt-5.5"), errorRegistry)).toBeNull();
+		expect(entry).toMatchObject({
+			provider: "openrouter",
+			adapter: "openrouter",
+			baseUrl: "https://openrouter.ai/api/v1/chat/completions",
+			model: "anthropic/claude-opus-5",
+		});
 	});
 
-	it("#given openrouter prefixed model id #when building entry #then resolves via underlying provider", async () => {
-		// given
-		const cases: Array<{ id: string; provider: SearchProvider; suffix: string }> = [
-			{ id: "openai/gpt-5.5", provider: "openai", suffix: "/responses" },
-			{ id: "anthropic/claude-opus-4-7", provider: "anthropic", suffix: "/messages" },
-			{ id: "xai/grok-4-fast", provider: "xai", suffix: "/responses" },
-			{ id: "perplexity/sonar-pro", provider: "perplexity", suffix: "/chat/completions" },
-			{ id: "z-ai/glm-4.6", provider: "z-ai", suffix: "/chat/completions" },
-		];
+	it("#given resolved provider headers #when resolving #then preserves them without requiring an api key", async () => {
+		const headers = { Authorization: "Bearer gateway-token", "x-tenant": "team" };
+		const entry = await buildNativeEntry(model("openai", "gpt-5.5"), registry({ ok: true, headers }));
 
-		for (const testCase of cases) {
-			// when
-			const entry = await buildNativeEntry(model("openrouter", testCase.id), registry());
-
-			// then
-			expect(entry).toEqual({
-				id: "native",
-				provider: testCase.provider,
-				apiKey: "native-test",
-				baseUrl: `https://gateway.example.com/v1${testCase.suffix}`,
-				model: testCase.id,
-				priority: -1,
-			});
-		}
+		expect(entry).toMatchObject({ provider: "openai", adapter: "openai", headers });
+		expect(entry).not.toHaveProperty("apiKey");
 	});
 
-	it("#given openrouter id without slash #when building entry #then returns null", async () => {
-		// when
-		const entry = await buildNativeEntry(model("openrouter", "no-slash"), registry());
+	it("#given OpenAI Codex Responses #when resolving #then uses the Codex backend route", async () => {
+		const entry = await buildNativeEntry(
+			model("openai-codex", "gpt-5.6-sol", "https://chatgpt.com/backend-api", "openai-codex-responses"),
+			registry(),
+		);
 
-		// then
+		expect(entry).toMatchObject({
+			provider: "openai-codex",
+			adapter: "openai-codex-responses",
+			baseUrl: "https://chatgpt.com/backend-api/codex/responses",
+			model: "gpt-5.6-sol",
+		});
+	});
+
+	it("#given Codex OAuth supplied as an Authorization header #when resolving #then extracts its bearer token", async () => {
+		const token = "header.payload.signature";
+		const entry = await buildNativeEntry(
+			model("openai-codex", "gpt-5.6-sol", "https://chatgpt.com/backend-api", "openai-codex-responses"),
+			registry({ ok: true, headers: { Authorization: `Bearer ${token}`, "x-tenant": "ignored" } }),
+		);
+
+		expect(entry).toMatchObject({ apiKey: token });
+		expect(entry).not.toHaveProperty("headers");
+	});
+
+	it("#given Codex OAuth with a non-ChatGPT endpoint #when resolving #then rejects the native route", async () => {
+		const entry = await buildNativeEntry(
+			model("openai-codex", "gpt-5.6-sol", "https://gateway.example.com", "openai-codex-responses"),
+			registry(),
+		);
+
 		expect(entry).toBeNull();
 	});
 
-	it("#given base url already contains endpoint suffix #when building entry #then does not append twice", async () => {
-		// given
-		const openaiModel = model("openai", "gpt-5.5", "https://gateway.example.com/v1/responses");
-		const anthropicModel = model("anthropic", "claude-opus-4", "https://gateway.example.com/v1/messages");
-
-		// when
-		const openaiEntry = await buildNativeEntry(openaiModel, registry());
-		const anthropicEntry = await buildNativeEntry(anthropicModel, registry());
-
-		// then
-		expect(openaiEntry?.baseUrl).toBe("https://gateway.example.com/v1/responses");
-		expect(anthropicEntry?.baseUrl).toBe("https://gateway.example.com/v1/messages");
+	it("#given unsupported or unverified models #when resolving #then skips native search", async () => {
+		const auth = registry();
+		expect(await buildNativeEntry(model("openai-codex", "gpt-5.6-sol"), auth)).toBeNull();
+		expect(await buildNativeEntry(model("openai", "gpt-5.3-codex"), auth)).toBeNull();
+		expect(await buildNativeEntry(model("openai", "o3"), auth)).toBeNull();
+		expect(await buildNativeEntry(model("deepseek", "deepseek-v4", undefined, "openai-responses"), auth)).toBeNull();
+		expect(await buildNativeEntry(model("openrouter", "no-slash"), auth)).toBeNull();
+		expect(await buildNativeEntry(model("custom", "gpt-5.5"), auth)).toBeNull();
 	});
 
-	it("#given a caller-supplied entry id #when building entry #then preserves the public id override", async () => {
-		// given
-		const customId = "native-custom";
-
-		// when
-		const entry = await buildNativeEntry(model("openai", "gpt-5.5"), registry(), customId);
-
-		// then
-		expect(entry?.id).toBe(customId);
+	it("#given unavailable authentication #when resolving #then returns null", async () => {
+		expect(await buildNativeEntry(model("openai", "gpt-5.5"), registry({ ok: true }))).toBeNull();
+		expect(
+			await buildNativeEntry(
+				model("openai", "gpt-5.5"),
+				registry({ ok: true, headers: { "x-tenant": "team", "openai-beta": "responses" } }),
+			),
+		).toBeNull();
+		expect(
+			await buildNativeEntry(model("openai", "gpt-5.5"), registry({ ok: true, headers: { "x-api-key": "" } })),
+		).toBeNull();
+		expect(await buildNativeEntry(model("openai", "gpt-5.5"), registry({ ok: false, error: "missing" }))).toBeNull();
 	});
 
-	it("#given unsafe base url #when building entry #then returns null before resolving auth", async () => {
-		// given
-		let authCalls = 0;
-		const guardedRegistry: NativeModelRegistry = {
+	it("#given a trusted local active-model endpoint #when resolving #then preserves the local gateway", async () => {
+		const entry = await buildNativeEntry(model("openai", "gpt-5.5", "http://127.0.0.1:8080/v1"), registry());
+
+		expect(entry?.baseUrl).toBe("http://127.0.0.1:8080/v1/responses");
+	});
+
+	it("#given an invalid or credential-bearing endpoint #when resolving #then rejects it before authentication", async () => {
+		const getApiKeyAndHeaders = vi.fn(async () => ({ ok: true as const, apiKey: "native-test" }));
+		const unsafe = ["https://user:pass@gateway.example.com/v1", "ftp://gateway.example.com/v1", "not-a-url"];
+
+		for (const baseUrl of unsafe) {
+			expect(await buildNativeEntry(model("openai", "gpt-5.5", baseUrl), { getApiKeyAndHeaders })).toBeNull();
+		}
+		expect(getApiKeyAndHeaders).not.toHaveBeenCalled();
+	});
+
+	it("#given a registry with legacy discovery surface #when resolving #then never scans available models", async () => {
+		const getAvailable = vi.fn(() => {
+			throw new Error("must not be called");
+		});
+		const modelRegistry = {
+			getAvailable,
 			async getApiKeyAndHeaders() {
-				authCalls += 1;
-				return { ok: true, apiKey: "native-test" };
+				return { ok: true as const, apiKey: "native-test" };
 			},
 		};
-		const unsafeBaseUrls = [
-			"http://127.0.0.1/v1",
-			"https://localhost/v1",
-			"https://localhost./v1",
-			"https://sub.localhost./v1",
-			"https://127.1../v1",
-			"https://0177.0.0.1../v1",
-			"https://2130706433../v1",
-			"https://0x7f000001../v1",
-			"https://10.1../v1",
-			"https://user:pass@gateway.example.com/v1",
-			"https://[::1]/v1",
-			"https://[fd00::1]/v1",
-			"https://[fe80::1]/v1",
-			"not-a-url",
-		];
 
-		for (const baseUrl of unsafeBaseUrls) {
-			// when
-			const entry = await buildNativeEntry(model("openai", "gpt-5.5", baseUrl), guardedRegistry);
+		const entry = await buildNativeEntry(model("openai", "gpt-5.5"), modelRegistry);
 
-			// then
-			expect(entry).toBeNull();
-		}
-		expect(authCalls).toBe(0);
+		expect(entry?.provider).toBe("openai");
+		expect(getAvailable).not.toHaveBeenCalled();
 	});
 });
 
-describe("nativeMapping matrix", () => {
-	const matrix: Array<{
-		provider: string;
-		id: string;
-		mapped: { provider: SearchProvider; resource: string } | null;
-	}> = [
-		{ provider: "openai", id: "gpt-5.6-sol", mapped: { provider: "openai", resource: "responses" } },
-		{ provider: "openai", id: "gpt-5.6-terra", mapped: { provider: "openai", resource: "responses" } },
-		{ provider: "openai", id: "gpt-5.5", mapped: { provider: "openai", resource: "responses" } },
-		{ provider: "openai", id: "gpt-5.5-fast", mapped: { provider: "openai", resource: "responses" } },
-		{ provider: "openai", id: "gpt-5.4", mapped: { provider: "openai", resource: "responses" } },
-		{ provider: "openai", id: "gpt-5-pro", mapped: { provider: "openai", resource: "responses" } },
-		{ provider: "openai", id: "gpt-5", mapped: { provider: "openai", resource: "responses" } },
-		{ provider: "openai", id: "gpt-4.1-mini", mapped: { provider: "openai", resource: "responses" } },
-		{ provider: "openai", id: "gpt-4o-mini-2026-01-01", mapped: { provider: "openai", resource: "responses" } },
-		{ provider: "openai", id: "gpt-5.3-codex", mapped: null },
-		{ provider: "openai", id: "gpt-5.3-codex-spark", mapped: null },
-		{ provider: "openai", id: "gpt-4-turbo", mapped: null },
-		{ provider: "openai", id: "o3", mapped: null },
-		{ provider: "anthropic", id: "claude-opus-5", mapped: { provider: "anthropic", resource: "messages" } },
-		{ provider: "anthropic", id: "claude-sonnet-5", mapped: { provider: "anthropic", resource: "messages" } },
-		{ provider: "anthropic", id: "claude-fable-5", mapped: { provider: "anthropic", resource: "messages" } },
-		{ provider: "anthropic", id: "claude-haiku-4-5", mapped: { provider: "anthropic", resource: "messages" } },
-		{ provider: "anthropic", id: "claude-opus-4-8", mapped: { provider: "anthropic", resource: "messages" } },
-		{
-			provider: "anthropic",
-			id: "claude-sonnet-4-5-20250929",
-			mapped: { provider: "anthropic", resource: "messages" },
-		},
-		{ provider: "anthropic", id: "not-a-claude-model", mapped: null },
-		{ provider: "xai", id: "grok-4.3", mapped: { provider: "xai", resource: "responses" } },
-		{
-			provider: "openrouter",
-			id: "anthropic/claude-opus-5",
-			mapped: { provider: "anthropic", resource: "messages" },
-		},
-	];
-
-	for (const { provider, id, mapped } of matrix) {
-		const expected = mapped ? `${mapped.provider}/${mapped.resource}` : "null";
-		it(`#given ${provider}/${id} #when mapping native route #then resolves to ${expected}`, async () => {
-			// when
-			const entry = await buildNativeEntry(model(provider, id), registry());
-
-			// then
-			if (mapped === null) {
-				expect(entry).toBeNull();
-			} else {
-				expect(entry).toEqual({
-					id: "native",
-					provider: mapped.provider,
-					apiKey: "native-test",
-					baseUrl: `https://gateway.example.com/v1/${mapped.resource}`,
-					model: id,
-					priority: -1,
-				});
-			}
+describe("nativeMapping", () => {
+	it("#given provider aliases #when matching #then adapter is separate from transport provenance", () => {
+		expect(nativeMapping(model("zai", "glm-5"))).toEqual({ adapter: "z-ai", resource: "chat/completions" });
+		expect(nativeMapping(model("kimi-coding", "k3"))).toEqual({ adapter: "kimi", resource: "search" });
+		expect(nativeMapping(model("openrouter", "openai/gpt-5.5"))).toEqual({
+			adapter: "openrouter",
+			resource: "chat/completions",
 		});
-	}
+	});
 });

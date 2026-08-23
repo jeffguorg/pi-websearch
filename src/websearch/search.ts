@@ -1,16 +1,24 @@
-import { buildSearchRequest, normalizeSearchResponse } from "./providers.js";
+import {
+	buildSearchRequest,
+	executeDirectProviderSearch,
+	normalizeSearchResponse,
+	parseSearchResponseBody,
+} from "./providers.js";
 import type {
 	JsonObject,
 	RoutingStrategy,
 	SearchAttempt,
 	SearchDetails,
+	SearchExecutionPolicy,
 	SearchProviderEntry,
 	SearchRequest,
+	SearchRoute,
 	WebsearchConfig,
 } from "./types.js";
 
 const MAX_ERROR_DETAIL_LENGTH = 500;
 const DEFAULT_PROVIDER_TIMEOUT_MS = 60_000;
+const MAX_SEARCH_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 function isJsonObject(value: unknown): value is JsonObject {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -76,8 +84,13 @@ function searchAbortSignal(
 	};
 }
 
-function noResultsMessage(config: SearchProviderEntry, request: SearchRequest): string {
-	return `Search provider ${providerEntryLabel(config)} returned no results for "${request.query}".`;
+async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) throw abortReason(signal);
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(abortReason(signal));
+		signal.addEventListener("abort", onAbort, { once: true });
+		promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+	});
 }
 
 export interface SearchRoutingState {
@@ -96,8 +109,7 @@ export function providerEntryLabel(entry: {
 }): string {
 	const id = entry.entryId ?? entry.id;
 	if (!id || id === entry.provider) return entry.provider;
-	const nativePrefix = `native-${entry.provider}-`;
-	return `${entry.provider}/${id.startsWith(nativePrefix) ? "native" : id}`;
+	return `${entry.provider}/${id}`;
 }
 
 function sortedPriorityIndices(providers: SearchProviderEntry[]): number[] {
@@ -128,12 +140,17 @@ function rotateUnique(indices: number[], start: number, providerCount: number): 
 	return order;
 }
 
-function selectOrder(strategy: RoutingStrategy, providers: SearchProviderEntry[], state: SearchRoutingState): number[] {
+function selectOrder(
+	strategy: RoutingStrategy,
+	providers: SearchProviderEntry[],
+	state: SearchRoutingState,
+	advanceRoundRobin = true,
+): number[] {
 	if (strategy === "priority") return sortedPriorityIndices(providers);
 	if (strategy === "round-robin") {
 		const indices = weightedIndices(providers);
 		const order = rotateUnique(indices, state.roundRobinCursor % indices.length, providers.length);
-		state.roundRobinCursor = (state.roundRobinCursor + 1) % indices.length;
+		if (advanceRoundRobin) state.roundRobinCursor = (state.roundRobinCursor + 1) % indices.length;
 		return order;
 	}
 
@@ -149,14 +166,62 @@ function selectOrder(strategy: RoutingStrategy, providers: SearchProviderEntry[]
 	return [selected, ...providers.map((_provider, index) => index).filter((index) => index !== selected)];
 }
 
+function failedProviderDetails(
+	config: SearchProviderEntry | SearchRoute,
+	request: SearchRequest,
+	startedAt: number,
+	error: unknown,
+): SearchDetails {
+	const details: SearchDetails = {
+		provider: config.provider,
+		query: request.query,
+		results: [],
+		durationMs: Date.now() - startedAt,
+		truncated: false,
+		error: error instanceof Error && error.message ? error.message : "Search provider failed",
+	};
+	if (config.id !== undefined) details.entryId = config.id;
+	return details;
+}
+
 async function performProviderSearch(
-	config: SearchProviderEntry,
+	config: SearchProviderEntry | SearchRoute,
 	request: SearchRequest,
 	signal?: AbortSignal,
 ): Promise<SearchDetails> {
 	const startedAt = Date.now();
-	const built = buildSearchRequest(config, request);
 	const timeoutMs = timeoutMsFor(config);
+	const directAbort = searchAbortSignal(signal, timeoutMs);
+	try {
+		const directResults = await raceWithAbort(
+			executeDirectProviderSearch(config, request, directAbort.signal),
+			directAbort.signal,
+		);
+		if (directResults) {
+			const limitedResults = directResults.slice(0, request.maxResults);
+			const details: SearchDetails = {
+				provider: config.provider,
+				query: request.query,
+				results: limitedResults,
+				durationMs: Date.now() - startedAt,
+				truncated: directResults.length > request.maxResults,
+			};
+			if (config.id !== undefined) details.entryId = config.id;
+			return details;
+		}
+	} catch (error) {
+		if (signal?.aborted) throw abortReason(signal);
+		return failedProviderDetails(config, request, startedAt, error);
+	} finally {
+		directAbort.cleanup();
+	}
+
+	let built: ReturnType<typeof buildSearchRequest>;
+	try {
+		built = buildSearchRequest(config, request);
+	} catch (error) {
+		return failedProviderDetails(config, request, startedAt, error);
+	}
 	const abort = searchAbortSignal(signal, timeoutMs);
 	let response: Response;
 	try {
@@ -183,7 +248,14 @@ async function performProviderSearch(
 
 	let bodyText = "";
 	try {
+		const contentLength = Number(response.headers.get("content-length"));
+		if (Number.isFinite(contentLength) && contentLength > MAX_SEARCH_RESPONSE_BYTES) {
+			throw new Error(`Search response exceeds ${MAX_SEARCH_RESPONSE_BYTES} bytes`);
+		}
 		bodyText = await response.text();
+		if (Buffer.byteLength(bodyText, "utf8") > MAX_SEARCH_RESPONSE_BYTES) {
+			throw new Error(`Search response exceeds ${MAX_SEARCH_RESPONSE_BYTES} bytes`);
+		}
 	} catch (error) {
 		abort.cleanup();
 		if (signal?.aborted) throw abortReason(signal);
@@ -223,7 +295,16 @@ async function performProviderSearch(
 		return details;
 	}
 
-	const results = normalizeSearchResponse(config.provider, payload);
+	const adapter = "adapter" in config ? config.adapter : config.provider;
+	let results: SearchDetails["results"];
+	try {
+		if (adapter !== "duckduckgo-html") payload = parseSearchResponseBody(adapter, bodyText);
+		const normalized = normalizeSearchResponse(adapter, payload);
+		if (!Array.isArray(normalized)) throw new Error(`Search adapter ${adapter} returned invalid results`);
+		results = normalized;
+	} catch (error) {
+		return failedProviderDetails(config, request, startedAt, error);
+	}
 	const max = request.maxResults;
 	const limitedResults = results.slice(0, max);
 	const details: SearchDetails = {
@@ -233,7 +314,6 @@ async function performProviderSearch(
 		durationMs: Date.now() - startedAt,
 		truncated: results.length > max,
 	};
-	if (limitedResults.length === 0) details.error = noResultsMessage(config, request);
 	if (config.id !== undefined) details.entryId = config.id;
 	return details;
 }
@@ -261,49 +341,83 @@ export async function performSearch(
 	signal?: AbortSignal,
 	routingState?: SearchRoutingState,
 	onAttempt?: SearchAttemptListener,
+	nativeRoute?: SearchRoute,
+	policy: SearchExecutionPolicy = { useFallback: false, retryOnEmpty: false },
 ): Promise<SearchDetails> {
 	const startedAt = Date.now();
 	const state = routingState ?? createSearchRoutingState(config.providers.length);
-	const order = selectOrder(config.strategy, config.providers, state);
-	const attempts: SearchAttempt[] = [];
-	const routeLabels = order.flatMap((index) => {
+	const configuredOrder = selectOrder(config.strategy, config.providers, state, false);
+	const configuredRoutes = configuredOrder.flatMap((index) => {
 		const provider = config.providers[index];
-		return provider ? [providerEntryLabel(provider)] : [];
+		return provider ? [{ provider, configuredIndex: index }] : [];
 	});
+	const allRoutes: Array<{
+		provider: SearchProviderEntry | SearchRoute;
+		configuredIndex?: number;
+	}> = [...(nativeRoute ? [{ provider: nativeRoute }] : []), ...configuredRoutes];
+	const routes = policy.useFallback ? allRoutes : allRoutes.slice(0, 1);
+	const attempts: SearchAttempt[] = [];
+	let configuredAttemptStarted = false;
+	const routeLabels = routes.map(({ provider }) => providerEntryLabel(provider));
 	const collected = new Map<string, SearchDetails["results"][number]>();
 	let selectedDetails: SearchDetails | undefined;
+	let selectedSuccessfulDetails: SearchDetails | undefined;
+	let lastEmptySuccess: SearchDetails | undefined;
+	const successfulRoutes: SearchDetails[] = [];
 
-	for (const index of order) {
-		const provider = config.providers[index];
-		if (!provider) continue;
+	for (const route of routes) {
+		const { provider, configuredIndex } = route;
+		if (configuredIndex !== undefined && !configuredAttemptStarted) {
+			configuredAttemptStarted = true;
+			if (config.strategy === "round-robin") {
+				const weighted = weightedIndices(config.providers);
+				state.roundRobinCursor = (state.roundRobinCursor + 1) % weighted.length;
+			}
+		}
 		onAttempt?.(providerEntryLabel(provider), attempts, routeLabels);
 		const details = await performProviderSearch(provider, request, signal);
 		attempts.push(attemptFromDetails(details));
 
-		if (details.error) {
-			if (!config.fallback) return { ...details, strategy: config.strategy, attempts };
+		if (details.error !== undefined) {
 			selectedDetails = details;
+			if (!policy.useFallback) {
+				if (config.strategy === "fill-first" && collected.size > 0) break;
+				return { ...details, strategy: config.strategy, attempts };
+			}
 			continue;
 		}
 
-		state.successCounts[index] = (state.successCounts[index] ?? 0) + 1;
+		if (configuredIndex !== undefined) {
+			state.successCounts[configuredIndex] = (state.successCounts[configuredIndex] ?? 0) + 1;
+		}
 
-		if (config.strategy !== "fill-first") {
+		const isEmpty = details.results.length === 0;
+		if (isEmpty) lastEmptySuccess = details;
+		if (isEmpty && (!policy.useFallback || !policy.retryOnEmpty)) {
+			if (collected.size > 0) break;
+			return { ...details, strategy: config.strategy, attempts };
+		}
+		if (config.strategy !== "fill-first" && !isEmpty) {
 			return { ...details, strategy: config.strategy, attempts };
 		}
 
 		selectedDetails = details;
+		selectedSuccessfulDetails = details;
+		successfulRoutes.push(details);
 		for (const item of details.results) {
 			if (collected.size >= request.maxResults) break;
-			collected.set(item.url, item);
+			if (!collected.has(item.url)) {
+				collected.set(item.url, { ...item, route: providerEntryLabel(details) });
+			}
 		}
 		if (collected.size >= request.maxResults) break;
 	}
 
-	if (collected.size > 0 && selectedDetails) {
+	if (collected.size > 0 && selectedSuccessfulDetails) {
 		const results = [...collected.values()];
+		const soleSuccessfulRoute = successfulRoutes.length === 1 ? successfulRoutes[0] : undefined;
 		const details: SearchDetails = {
-			provider: selectedDetails.provider,
+			provider: soleSuccessfulRoute?.provider ?? "multiple",
 			query: request.query,
 			results,
 			durationMs: Date.now() - startedAt,
@@ -311,24 +425,42 @@ export async function performSearch(
 			strategy: config.strategy,
 			attempts,
 		};
-		if (selectedDetails.entryId !== undefined) details.entryId = selectedDetails.entryId;
+		if (soleSuccessfulRoute?.entryId !== undefined) details.entryId = soleSuccessfulRoute.entryId;
 		return details;
 	}
 
+	if (lastEmptySuccess) {
+		return {
+			...lastEmptySuccess,
+			durationMs: Date.now() - startedAt,
+			strategy: config.strategy,
+			attempts,
+		};
+	}
+
+	if (selectedDetails && !selectedDetails.error) {
+		return {
+			...selectedDetails,
+			durationMs: Date.now() - startedAt,
+			strategy: config.strategy,
+			attempts,
+		};
+	}
+
 	const failed = selectedDetails ?? {
-		provider: config.providers[0]?.provider ?? "exa",
+		provider: nativeRoute?.provider ?? config.providers[0]?.provider ?? "unknown",
 		query: request.query,
 		results: [],
 		durationMs: Date.now() - startedAt,
 		truncated: false,
-		error: "All configured search providers failed.",
+		error: "All search providers failed.",
 	};
 	return {
 		...failed,
 		durationMs: Date.now() - startedAt,
 		strategy: config.strategy,
 		attempts,
-		error: `All configured search providers failed: ${attempts.map((attempt) => `${providerEntryLabel(attempt)} ${attempt.error ?? "failed"}`).join("; ")}`,
+		error: `All search providers failed: ${attempts.map((attempt) => `${providerEntryLabel(attempt)} ${attempt.error ?? "failed"}`).join("; ")}`,
 	};
 }
 

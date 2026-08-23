@@ -26,7 +26,7 @@ describe("loadWebsearchConfig", () => {
 				expect(result.source).toBe("default:duckduckgo-html");
 				expect(result.config).toEqual({
 					strategy: "priority",
-					fallback: true,
+					fallback: false,
 					auto: true,
 					providers: [{ id: "default", provider: "duckduckgo-html", maxResults: 10 }],
 				});
@@ -62,11 +62,29 @@ describe("loadWebsearchConfig", () => {
 			expect(result.ok).toBe(true);
 			if (result.ok) {
 				expect(result.config.strategy).toBe("priority");
-				expect(result.config.fallback).toBe(true);
+				expect(result.config.fallback).toBe(false);
 				expect(result.config.auto).toBe(true);
 				expect(result.config.providers).toEqual([{ provider: "exa", apiKey: "exa-project", maxResults: 3 }]);
 				expect(result.source).toBe(join(projectPi, "websearch.json"));
 			}
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given malformed auto field in file #when loading #then rejects instead of enabling native routing", async () => {
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ auto: "false", provider: "duckduckgo-html" }),
+			"utf8",
+		);
+
+		try {
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+			expect(result.ok).toBe(false);
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
@@ -93,6 +111,121 @@ describe("loadWebsearchConfig", () => {
 				expect(result.source).toBe(join(projectPi, "websearch.json"));
 				expect(result.config.providers).toEqual([{ provider: "brave", apiKey: "brave-test" }]);
 			}
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given fallback_chain #when loading config #then normalizes it into the executable provider chain", async () => {
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({
+				fallback_chain: [
+					{ id: "tavily", provider: "tavily", apiKey: "tavily-test" },
+					{ id: "ddg", provider: "duckduckgo-html" },
+				],
+			}),
+			"utf8",
+		);
+
+		try {
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.config.fallback).toBe(false);
+				expect(result.config.providers.map((entry) => entry.id)).toEqual(["tavily", "ddg"]);
+			}
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given optional uninstalled plugin in fallback_chain #when loading #then skips it and keeps available entries", async () => {
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({
+				fallback_chain: [
+					{ id: "zhipu-mcp", provider: "zhipu-mcp", optional: true },
+					{ id: "ddg", provider: "duckduckgo-html" },
+				],
+			}),
+			"utf8",
+		);
+
+		try {
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+			expect(result.ok).toBe(true);
+			if (result.ok) expect(result.config.providers.map((entry) => entry.id)).toEqual(["ddg"]);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given optional provider without credentials #when loading #then skips it and keeps the final DDG route", async () => {
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({
+				fallback_chain: [
+					{ id: "tavily", provider: "tavily", optional: true },
+					{ id: "ddg", provider: "duckduckgo-html" },
+				],
+			}),
+			"utf8",
+		);
+
+		try {
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+			expect(result.ok).toBe(true);
+			if (result.ok) expect(result.config.providers.map((entry) => entry.id)).toEqual(["ddg"]);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given malformed non-optional fallback entry #when loading #then rejects the whole chain", async () => {
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ fallback_chain: [{ id: "missing-provider" }, { provider: "duckduckgo-html" }] }),
+			"utf8",
+		);
+
+		try {
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+			expect(result.ok).toBe(false);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given providers and fallback_chain together #when loading config #then rejects ambiguous chains", async () => {
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({
+				providers: [{ provider: "duckduckgo-html" }],
+				fallback_chain: [{ provider: "duckduckgo-html" }],
+			}),
+			"utf8",
+		);
+
+		try {
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+			expect(result.ok).toBe(false);
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
@@ -212,6 +345,21 @@ describe("loadWebsearchConfig", () => {
 });
 
 describe("validateWebsearchConfig", () => {
+	it("#given malformed recognized fields #when validating #then config is invalid", () => {
+		const invalidConfig = JSON.parse(
+			JSON.stringify({
+				strategy: "not-a-strategy",
+				fallback: false,
+				auto: true,
+				providers: [{ provider: "duckduckgo-html" }],
+			}),
+		);
+
+		const result = validateWebsearchConfig(invalidConfig);
+
+		expect(result.ok).toBe(false);
+	});
+
 	it("#given config with non-boolean auto #when validating #then config is invalid", () => {
 		// given
 		const invalidConfig = JSON.parse(

@@ -4,9 +4,9 @@ import type { ConfigLoadResult } from "../src/websearch/types.js";
 
 type SessionHandler = (event: object, ctx: object) => Promise<void> | void;
 type LoadWebsearchConfig = (options: { readonly cwd: string }) => Promise<ConfigLoadResult>;
+type CommandHandler = (rawArgs: string, ctx: { ui: { notify: ReturnType<typeof vi.fn> } }) => Promise<void>;
 
 const loadWebsearchConfig = vi.hoisted(() => vi.fn<LoadWebsearchConfig>());
-
 vi.mock("../src/websearch/config.js", () => ({ loadWebsearchConfig }));
 
 const activeConfig: ConfigLoadResult = {
@@ -16,124 +16,72 @@ const activeConfig: ConfigLoadResult = {
 		strategy: "priority",
 		fallback: true,
 		auto: true,
-		providers: [{ provider: "duckduckgo-html" }],
+		providers: [{ id: "default", provider: "duckduckgo-html" }],
 	},
 };
 
-const missingConfig: ConfigLoadResult = {
-	ok: false,
-	reason: "missing_config",
-	message: "Missing websearch config. Create .pi/websearch.json or ~/.pi/websearch.json before starting pi.",
-};
-
-function createTheme() {
-	return { fg: (_key: string, value: string) => value };
+function createPi() {
+	let sessionStart: SessionHandler | undefined;
+	let statusCommand: CommandHandler | undefined;
+	const pi = {
+		registerTool: vi.fn(),
+		registerCommand(_name: string, definition: { handler: CommandHandler }) {
+			statusCommand = definition.handler;
+		},
+		on(eventName: string, handler: unknown) {
+			if (eventName === "session_start") sessionStart = handler as SessionHandler;
+		},
+	};
+	return { pi, getSessionStart: () => sessionStart, getStatusCommand: () => statusCommand };
 }
 
-describe("websearch extension UI", () => {
+function context(provider: string, notify = vi.fn()) {
+	return {
+		cwd: "/tmp/websearch",
+		model: { provider, api: "openai-responses" },
+		hasUI: true,
+		ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify },
+	};
+}
+
+describe("websearch extension state", () => {
 	beforeEach(() => {
 		loadWebsearchConfig.mockReset();
 		loadWebsearchConfig.mockResolvedValue(activeConfig);
 	});
 
-	it("#given default backend #when session starts #then clears startup widget", async () => {
-		// given
-		let sessionStart: SessionHandler | undefined;
-		const setStatus = vi.fn();
-		const setWidget = vi.fn();
+	it.each(["local", "openai", "anthropic"])(
+		"#given %s active provider #when session starts #then always loads provider-independent configuration",
+		async (provider) => {
+			const harness = createPi();
+			await websearchExtension(harness.pi as never);
+			const ctx = context(provider);
 
-		// when
-		websearchExtension({
-			registerTool: vi.fn(),
-			registerCommand: vi.fn(),
-			on(eventName: string, handler: unknown) {
-				if (eventName === "session_start") {
-					sessionStart = handler as SessionHandler;
-				}
-			},
-		} as never);
-		await sessionStart?.(
-			{},
-			{
-				cwd: "/tmp/no-config",
-				model: { provider: "local", api: "openai-completions" },
-				ui: { setStatus, setWidget, notify: vi.fn(), theme: createTheme() },
-			},
-		);
+			await harness.getSessionStart()?.({}, ctx);
 
-		// then
-		expect(setStatus).toHaveBeenCalledWith("pi-websearch", undefined);
-		expect(setWidget).toHaveBeenCalledWith("pi-websearch", undefined);
-	});
+			expect(loadWebsearchConfig).toHaveBeenCalledWith({ cwd: "/tmp/websearch" });
+			expect(ctx.ui.setStatus).toHaveBeenCalledWith("pi-websearch", undefined);
+			expect(ctx.ui.setWidget).toHaveBeenCalledWith("pi-websearch", undefined);
+		},
+	);
 
-	it("#given provider native model #when session starts #then clears delegated native widget", async () => {
-		// given
-		let sessionStart: SessionHandler | undefined;
-		const setStatus = vi.fn();
-		const setWidget = vi.fn();
-
-		// when
-		websearchExtension({
-			registerTool: vi.fn(),
-			registerCommand: vi.fn(),
-			on(eventName: string, handler: unknown) {
-				if (eventName === "session_start") {
-					sessionStart = handler as SessionHandler;
-				}
-			},
-		} as never);
-		await sessionStart?.(
-			{},
-			{
-				cwd: "/tmp/no-config",
-				model: { provider: "openai", api: "openai-responses" },
-				ui: { setStatus, setWidget, notify: vi.fn(), theme: createTheme() },
-			},
-		);
-
-		// then
-		expect(setStatus).toHaveBeenCalledWith("pi-websearch", undefined);
-		expect(setWidget).toHaveBeenCalledWith("pi-websearch", undefined);
-	});
-
-	it("#given custom OpenAI-compatible provider and missing config #when session starts #then reports missing config", async () => {
-		// given
-		let sessionStart: SessionHandler | undefined;
+	it("#given invalid config #when session starts #then reports the configuration error", async () => {
+		const failure: ConfigLoadResult = {
+			ok: false,
+			reason: "invalid_config",
+			message: "Invalid provider config",
+		};
+		loadWebsearchConfig.mockResolvedValue(failure);
+		const harness = createPi();
+		await websearchExtension(harness.pi as never);
 		const notify = vi.fn();
-		loadWebsearchConfig.mockResolvedValue(missingConfig);
 
-		// when
-		websearchExtension({
-			registerTool: vi.fn(),
-			registerCommand: vi.fn(),
-			on(eventName: string, handler: unknown) {
-				if (eventName === "session_start") {
-					sessionStart = handler as SessionHandler;
-				}
-			},
-		} as never);
-		await sessionStart?.(
-			{},
-			{
-				cwd: "/tmp/no-config",
-				model: { provider: "apitopia", api: "openai-responses" },
-				ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify, theme: createTheme() },
-			},
-		);
+		await harness.getSessionStart()?.({}, context("openai", notify));
 
-		// then
-		expect(loadWebsearchConfig).toHaveBeenCalledWith({ cwd: "/tmp/no-config" });
-		expect(notify).toHaveBeenCalledWith(missingConfig.message, "error");
-	});
-});
-
-describe("websearch /websearch status provider labels", () => {
-	beforeEach(() => {
-		loadWebsearchConfig.mockReset();
+		expect(notify).toHaveBeenCalledWith(failure.message, "error");
 	});
 
-	it("#given active multi-provider config #when /websearch status runs #then providers render as provider/id and collapse discovered native ids", async () => {
-		// given
+	it("#given active config #when status runs #then reports only explicitly configured providers", async () => {
 		loadWebsearchConfig.mockResolvedValue({
 			ok: true,
 			source: "test",
@@ -144,40 +92,19 @@ describe("websearch /websearch status provider labels", () => {
 				providers: [
 					{ id: "primary", provider: "exa", apiKey: "test-key" },
 					{ id: "backup", provider: "duckduckgo-html" },
-					{ id: "native-openai-abc123", provider: "openai", apiKey: "test-key" },
 				],
 			},
 		});
-		let sessionStart: SessionHandler | undefined;
-		type CommandHandler = (rawArgs: string, ctx: { ui: { notify: ReturnType<typeof vi.fn> } }) => Promise<void>;
-		let statusCommand: CommandHandler | undefined;
-		websearchExtension({
-			registerTool: vi.fn(),
-			registerCommand(_name: string, definition: { handler: CommandHandler }) {
-				statusCommand = definition.handler;
-			},
-			on(eventName: string, handler: unknown) {
-				if (eventName === "session_start") sessionStart = handler as SessionHandler;
-			},
-		} as never);
-		await sessionStart?.(
-			{},
-			{
-				cwd: "/tmp/labels",
-				model: { provider: "local", api: "openai-completions" },
-				ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn(), theme: createTheme() },
-			},
-		);
+		const harness = createPi();
+		await websearchExtension(harness.pi as never);
+		await harness.getSessionStart()?.({}, context("openai-codex"));
 		const notify = vi.fn();
 
-		// when
-		await statusCommand?.("status", { ui: { notify } });
+		await harness.getStatusCommand()?.("status", { ui: { notify } });
 
-		// then
-		expect(notify).toHaveBeenCalledTimes(1);
-		const call = notify.mock.calls[0];
-		expect(call?.[1]).toBe("info");
-		expect(call?.[0]).toContain("providers=exa/primary, duckduckgo-html/backup, openai/native");
-		expect(call?.[0]).not.toContain("primary/exa");
+		expect(notify).toHaveBeenCalledWith(
+			expect.stringContaining("providers=exa/primary, duckduckgo-html/backup"),
+			"info",
+		);
 	});
 });

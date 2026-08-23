@@ -18,8 +18,48 @@ export interface BuildContext {
 }
 
 export interface ProviderModule {
-	buildRequest(ctx: BuildContext): BuiltSearchRequest;
-	normalizeResponse(data: JsonObject): SearchResultItem[];
+	buildRequest?(ctx: BuildContext): BuiltSearchRequest;
+	parseResponseBody?(bodyText: string): JsonObject;
+	normalizeResponse?(data: JsonObject): SearchResultItem[];
+	/** Execute without the built-in HTTP transport. Intended for trusted global
+	 * plugins that own an MCP client or a bounded subprocess protocol. */
+	search?(ctx: BuildContext, signal: AbortSignal): Promise<SearchResultItem[]>;
+}
+
+/** Model info passed to a native binding's `match()` for auto-routing. */
+export interface NativeModelInfoFull {
+	provider: string;
+	id: string;
+	baseUrl: string;
+	/** The protocol pi uses for this provider (e.g. "openai-completions", "anthropic-messages"). */
+	api?: string;
+}
+
+/**
+ * A pluggable native-search binding. Lets an external script declare which
+ * models it auto-routes for and which endpoint resource to hit.
+ */
+export interface NativeProviderBinding {
+	/** The search provider id this binding powers (e.g. "deepseek", "nutstore"). */
+	provider: string;
+	/** Endpoint resource appended to the model's baseUrl (e.g. "messages", "chat/completions"). */
+	resource: string;
+	/** Return true when this binding should handle the given active model. */
+	match(model: NativeModelInfoFull): boolean;
+}
+
+/**
+ * Complete external provider definition. A script in the external providers
+ * directory (default ~/.pi/websearch/providers/) exports this (default or
+ * named `extension`) to register both the search module and the auto-routing.
+ */
+export interface SearchProviderExtension extends ProviderModule {
+	provider: string;
+	/** Optional native binding. Fallback-only plugins omit both fields. */
+	resource?: string;
+	match?(model: NativeModelInfoFull): boolean;
+	/** Optional default base URL when the model doesn't provide one. */
+	defaultBaseUrl?: string;
 }
 
 export function contentHeaders(extra?: Record<string, string>): Record<string, string> {

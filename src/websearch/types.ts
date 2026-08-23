@@ -1,3 +1,5 @@
+/** Built-in search providers. External/provider-specific providers are plain
+ *  strings (see SearchProviderExtension), so this union is only the known set. */
 export type SearchProvider =
 	| "exa"
 	| "tavily"
@@ -8,10 +10,12 @@ export type SearchProvider =
 	| "z-ai"
 	| "openai"
 	| "codex"
+	| "openrouter"
 	| "anthropic"
 	| "perplexity"
 	| "xai"
-	| "kimi";
+	| "kimi"
+	| "deepseek";
 
 export type SearchContextSize = "low" | "medium" | "high";
 export type CodexSearchMode = "cached" | "live";
@@ -19,7 +23,7 @@ export type RoutingStrategy = "priority" | "round-robin" | "fill-first";
 
 export interface SearchProviderConfig {
 	id?: string;
-	provider: SearchProvider;
+	provider: string;
 	apiKey?: string;
 	baseUrl?: string;
 	searchEngineId?: string;
@@ -30,12 +34,23 @@ export interface SearchProviderConfig {
 	allowedDomains?: string[];
 	blockedDomains?: string[];
 	userLocation?: SearchUserLocation;
+	openRouterRouting?: JsonObject;
 	timeoutMs?: number;
 }
 
 export interface SearchProviderEntry extends SearchProviderConfig {
 	priority?: number;
 	weight?: number;
+	/** Omit this chain entry when its plugin or credentials are unavailable. */
+	optional?: boolean;
+}
+
+/** A provider entry resolved for execution. Native routes keep the active model
+ * provider as provenance while adapter selects the wire protocol implementation. */
+export interface SearchRoute extends SearchProviderEntry {
+	source: "native" | "configured";
+	adapter: string;
+	headers?: Record<string, string>;
 }
 
 export interface WebsearchConfig {
@@ -59,6 +74,11 @@ export interface SearchRequest {
 	blockedDomains?: string[];
 }
 
+export interface SearchExecutionPolicy {
+	useFallback: boolean;
+	retryOnEmpty: boolean;
+}
+
 export interface BuiltSearchRequest {
 	url: string;
 	init: {
@@ -74,11 +94,12 @@ export interface SearchResultItem {
 	snippet?: string;
 	score?: number;
 	source?: string;
+	route?: string;
 	publishedAt?: string;
 }
 
 export interface SearchDetails {
-	provider: SearchProvider;
+	provider: string;
 	entryId?: string;
 	query: string;
 	results: SearchResultItem[];
@@ -103,11 +124,7 @@ export interface SearchProgressDetails {
 	blockedDomains?: string[];
 }
 
-export type ConfigLoadFailureReason =
-	| "missing_config"
-	| "invalid_config"
-	| "missing_api_key"
-	| "provider_native_bypass";
+export type ConfigLoadFailureReason = "missing_config" | "invalid_config" | "missing_api_key";
 
 export interface SearchErrorDetails {
 	phase: "error";
@@ -119,7 +136,7 @@ export interface SearchErrorDetails {
 export type SearchRenderDetails = SearchDetails | SearchProgressDetails | SearchErrorDetails;
 
 export interface SearchAttempt {
-	provider: SearchProvider;
+	provider: string;
 	entryId?: string;
 	durationMs: number;
 	resultsCount: number;
