@@ -5,6 +5,7 @@ import { duckDuckGoHtmlProvider } from "./providers/duckduckgo-html.js";
 import { exaProvider } from "./providers/exa.js";
 import { googleCseProvider } from "./providers/google-cse.js";
 import { kimiProvider } from "./providers/kimi.js";
+import { minimaxCnProvider } from "./providers/minimax-cn.js";
 import { openAiCodexResponsesProvider } from "./providers/openai-codex-responses.js";
 import { openAiResponsesProvider } from "./providers/openai-responses.js";
 import { openRouterProvider } from "./providers/openrouter.js";
@@ -16,6 +17,7 @@ import { isJsonObject, parseObjectPayload, resolveDomainFilters } from "./provid
 import { tavilyProvider } from "./providers/tavily.js";
 import { xaiProvider } from "./providers/xai.js";
 import { zAiProvider } from "./providers/z-ai.js";
+import { zaiCodingCnProvider } from "./providers/zai-coding-cn.js";
 import type {
 	BuiltSearchRequest,
 	JsonObject,
@@ -43,6 +45,9 @@ const PROVIDER_MODULES: Record<string, ProviderModule> = {
 	kimi: kimiProvider,
 	deepseek: deepseekProvider,
 	"openai-codex-responses": openAiCodexResponsesProvider,
+	"minimax-cn": minimaxCnProvider,
+	minimax: minimaxCnProvider,
+	"zai-coding-cn": zaiCodingCnProvider,
 };
 
 /** External provider names registered via loadExternalProviderExtensions(). */

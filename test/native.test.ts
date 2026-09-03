@@ -59,6 +59,16 @@ describe("active native route", () => {
 				adapter: "deepseek",
 				baseUrl: "https://api.deepseek.com/anthropic/v1/messages",
 			},
+			{
+				model: model("minimax-cn", "minimax-M2.5", "https://api.minimaxi.com/anthropic/v1"),
+				adapter: "minimax-cn",
+				baseUrl: "https://api.minimaxi.com/anthropic/v1/messages",
+			},
+			{
+				model: model("zai-coding-cn", "glm-4.7", "https://open.bigmodel.cn/api/coding/paas/v4"),
+				adapter: "zai-coding-cn",
+				baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4/mcp/web_search_prime/mcp",
+			},
 		];
 
 		for (const testCase of cases) {
@@ -197,6 +207,32 @@ describe("nativeMapping", () => {
 		expect(nativeMapping(model("openrouter", "openai/gpt-5.5"))).toEqual({
 			adapter: "openrouter",
 			resource: "chat/completions",
+		});
+	});
+
+	it("#given any minimax-cn model #when matching #then routes to minimax-cn adapter regardless of model id", () => {
+		expect(nativeMapping(model("minimax-cn", "minimax-M2.5"))).toEqual({
+			adapter: "minimax-cn",
+			resource: "messages",
+		});
+		expect(nativeMapping(model("minimax-cn", "minimax-M3", "https://api.minimaxi.com/anthropic/v1"))).toEqual({
+			adapter: "minimax-cn",
+			resource: "messages",
+		});
+		expect(nativeMapping(model("minimax", "MiniMax-M3", "https://api.minimax.io/anthropic"))).toEqual({
+			adapter: "minimax-cn",
+			resource: "messages",
+		});
+	});
+
+	it("#given any zai-coding-cn model #when matching #then routes to the web-search-prime MCP adapter regardless of model id", () => {
+		expect(nativeMapping(model("zai-coding-cn", "glm-4.7"))).toEqual({
+			adapter: "zai-coding-cn",
+			resource: "mcp/web_search_prime/mcp",
+		});
+		expect(nativeMapping(model("zai-coding", "glm-5"))).toEqual({
+			adapter: "zai-coding-cn",
+			resource: "mcp/web_search_prime/mcp",
 		});
 	});
 });

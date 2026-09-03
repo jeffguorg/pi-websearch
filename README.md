@@ -58,16 +58,17 @@ Legacy configs that use `"provider"` instead of `"backend"` continue to work.
 			"maxResults": 8
 		},
 		{
-			"id": "zhipu-mcp",
-			"provider": "zhipu-mcp",
+			"id": "zai-coding-cn",
+			"provider": "zai-coding-cn",
 			"optional": true,
 			"priority": 20
 		},
 		{
-			"id": "minimax-mcp",
-			"provider": "minimax-mcp",
+			"id": "minimax-cn",
+			"provider": "minimax-cn",
 			"optional": true,
-			"priority": 30
+			"priority": 30,
+			"maxResults": 8
 		},
 		{
 			"id": "external-command",
@@ -100,6 +101,8 @@ Models that activate native routing (Q1 2026):
 - `z-ai` or `zai`: any `glm-*`.
 - `kimi-coding`: the `kimi-coding` provider (routes to the Kimi search endpoint).
 - `deepseek`: the `deepseek` provider only when the model API is `anthropic-messages`. It routes to DeepSeek's Anthropic-compatible endpoint using `web_search_20260209`.
+- `minimax-cn` (and its global alias `minimax`): any model registered under the `minimax-cn` / `minimax` pi providers. The adapter inspects the resolved API key: `sk-cp-…` (Token Plan / Coding Plan subscription) posts to the bundled `/v1/coding_plan/search` REST endpoint and consumes the plan's bundled search quota; any other prefix (e.g. `sk-api-…` pay-as-you-go) hits the Anthropic-compatible `/anthropic/v1/messages` endpoint with the `web_search_20250305` server tool (Beta) and is billed per request. The regional host is derived from the model's baseUrl (`minimax-cn` → `https://api.minimaxi.com`, `minimax` → `https://api.minimax.io`); no `uvx` subprocess is needed.
+- `zai-coding-cn`: any model registered under the `zai-coding-cn` provider. The adapter connects to the GLM Coding Plan remote `web-search-prime` MCP server (`https://open.bigmodel.cn/api/mcp/web_search_prime/mcp`) and consumes the plan's bundled MCP quota; it ignores the chat endpoint baseUrl derived from the model registry.
 - `openrouter`: any `<provider>/<model>` whose upstream provider and model match one of the supported rows above. Requests stay on the active OpenRouter Chat Completions transport and use its `web` plugin; output is labeled `openrouter/native`, not as the upstream provider.
 
 The native entry inherits `model.baseUrl` from `ExtensionContext.model`, so any local gateway override registered in the pi model registry is honored. Standard endpoints append `/v1/<resource>` when needed; Codex endpoints append `/codex/responses` without inserting `/v1`.
@@ -139,12 +142,14 @@ Supported providers:
 - `serper`: Serper Google search API. Requires `apiKey`.
 - `google-cse`: Google Custom Search JSON API. Requires `apiKey` and `searchEngineId`.
 - `z-ai`: Z.ai web search endpoint. Requires `apiKey`.
+- `zai-coding-cn`: GLM Coding Plan 联网搜索 MCP (`web-search-prime` streamable HTTP server). Consumes the plan's bundled MCP quota instead of pay-per-use billing; requires a Coding Plan `apiKey` when configured explicitly. The default baseUrl is `https://open.bigmodel.cn/api/mcp/web_search_prime/mcp`; set `baseUrl` to `https://api.z.ai/api/mcp/web_search_prime/mcp` for the global host.
 - `openai`: OpenAI Responses API hosted `web_search` tool. Requires `apiKey`.
 - `codex`: OpenAI Responses API hosted `web_search` tool for explicitly configured API keys; this is separate from `openai-codex` OAuth auto-routing.
 - `openrouter`: OpenRouter Chat Completions with the `web` plugin. Requires `apiKey` when configured explicitly.
 - `anthropic`: Anthropic Messages API with server `web_search_20250305` tool. Requires `apiKey`.
 - `perplexity`: Perplexity Search API. Requires `apiKey`.
 - `xai`: xAI Responses API hosted `web_search` tool. Requires `apiKey`.
+- `minimax-cn` / `minimax`: MiniMax web search (CN and global hosts). Dispatches by API key prefix: `sk-cp-…` posts to the bundled `/v1/coding_plan/search` REST endpoint (Token Plan bundled quota); any other key (typically `sk-api-…` for pay-as-you-go) hits the Anthropic-compatible `/anthropic/v1/messages` endpoint with the `web_search_20250305` server tool. Requires `apiKey`. The default baseUrl is `https://api.minimaxi.com/anthropic/v1/messages` for `minimax-cn` and `https://api.minimax.io/anthropic/v1/messages` for `minimax`; only the origin is used to pick the regional host.
 - `deepseek`: DeepSeek's Anthropic-compatible endpoint with the server-side `web_search_20260209` tool. The key is resolved automatically from the active DeepSeek model, so no config entry is required.
 
 Provider-specific optional fields include `id`, `baseUrl`, `headers`, `model`, `maxResults`, `priority`, `weight`, `searchContextSize`, `codexMode`, `allowedDomains`, `blockedDomains`, and `userLocation` where supported. `baseUrl` is supported for every provider and must be a public HTTPS URL without embedded credentials; self-hosted providers (`searxng`) may use plain HTTP and private hosts instead. `headers` is a string map merged into every request of that entry — use it for reverse-proxy authentication in front of self-hosted instances; it is stored in plaintext like `apiKey`.
@@ -182,10 +187,9 @@ A fallback-only plugin may omit `match`, `resource`, `buildRequest`, and `normal
 Examples:
 
 - `examples/providers/nutstore.ts`: native Nutstore/OpenRouter bridge.
-- `examples/providers/minimax-coding-plan.ts`: fallback-only MiniMax Coding Plan search using its documented `/v1/coding_plan/search` endpoint. Copy it into `~/.pi/websearch/providers/` and set `MINIMAX_API_KEY` plus `MINIMAX_API_HOST`.
 - `examples/providers/external-command.ts`: fallback-only, fixed-executable JSON-stdin bridge. Copy it into `~/.pi/websearch/providers/` and set `PI_WEBSEARCH_EXECUTABLE` to an absolute, trusted executable path.
 
-The built-in `z-ai` HTTP adapter already exposes Zhipu/GLM web search, so an MCP process is not required for that service. A separate Zhipu MCP bridge can still be registered as an optional direct plugin if its MCP-specific credentials or quota are desired.
+The built-in `z-ai` HTTP adapter targets the pay-per-use Zhipu web_search REST API; `zai-coding-cn` targets the GLM Coding Plan bundled 联网搜索 MCP and consumes plan quota instead.
 
 ## Commands
 

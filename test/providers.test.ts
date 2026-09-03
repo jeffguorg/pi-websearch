@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
 	buildSearchRequest,
@@ -894,5 +894,289 @@ describe("normalizeSearchResponse", () => {
 
 		// then
 		expect(results).toEqual([{ title: "Kimi Result", url: "https://kimi.example.com", snippet: "Kimi snippet" }]);
+	});
+});
+
+describe("minimax-cn key dispatch", () => {
+	it("#given sk-cp- prefix #when inspecting #then recognizes Token Plan / Coding Plan subscription", async () => {
+		const { isTokenPlanKey, isPayAsYouGoKey } = await import("../src/websearch/providers/minimax-cn.js");
+		expect(isTokenPlanKey("sk-cp-abc123")).toBe(true);
+		expect(isPayAsYouGoKey("sk-cp-abc123")).toBe(false);
+	});
+
+	it("#given sk-api- prefix #when inspecting #then recognizes pay-as-you-go", async () => {
+		const { isTokenPlanKey, isPayAsYouGoKey } = await import("../src/websearch/providers/minimax-cn.js");
+		expect(isTokenPlanKey("sk-api-abc123")).toBe(false);
+		expect(isPayAsYouGoKey("sk-api-abc123")).toBe(true);
+	});
+
+	it("#given unknown prefix #when inspecting #then falls through to pay-as-you-go branch", async () => {
+		const { isTokenPlanKey, isPayAsYouGoKey } = await import("../src/websearch/providers/minimax-cn.js");
+		expect(isTokenPlanKey("unknown-prefix")).toBe(false);
+		expect(isPayAsYouGoKey("unknown-prefix")).toBe(false);
+	});
+
+	it("#given undefined key #when inspecting #then both predicates are false", async () => {
+		const { isTokenPlanKey, isPayAsYouGoKey } = await import("../src/websearch/providers/minimax-cn.js");
+		expect(isTokenPlanKey(undefined)).toBe(false);
+		expect(isPayAsYouGoKey(undefined)).toBe(false);
+	});
+
+	it("#given baseUrl #when deriving API host #then extracts the regional origin", async () => {
+		const { apiHostFor } = await import("../src/websearch/providers/minimax-cn.js");
+		expect(apiHostFor({ provider: "minimax-cn", baseUrl: "https://api.minimaxi.com/anthropic/v1/messages" })).toBe(
+			"https://api.minimaxi.com",
+		);
+		expect(apiHostFor({ provider: "minimax", baseUrl: "https://api.minimax.io/anthropic/v1/messages" })).toBe(
+			"https://api.minimax.io",
+		);
+	});
+
+	it("#given no baseUrl but env override #when deriving API host #then honors the env var", async () => {
+		const { apiHostFor } = await import("../src/websearch/providers/minimax-cn.js");
+		process.env["MINIMAX_API_HOST"] = "https://api.minimax.io";
+		try {
+			expect(apiHostFor({ provider: "minimax-cn" })).toBe("https://api.minimax.io");
+		} finally {
+			delete process.env["MINIMAX_API_HOST"];
+		}
+	});
+
+	it("#given no baseUrl or env #when deriving API host #then defaults per regional provider", async () => {
+		const { apiHostFor } = await import("../src/websearch/providers/minimax-cn.js");
+		expect(apiHostFor({ provider: "minimax-cn" })).toBe("https://api.minimaxi.com");
+		expect(apiHostFor({ provider: "minimax" })).toBe("https://api.minimax.io");
+	});
+});
+
+describe("minimax-cn direct adapter", () => {
+	beforeEach(() => {
+		vi.resetModules();
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("#given token plan key #when searching #then posts to the coding-plan REST endpoint and parses organic results", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					base_resp: { status_code: 0, status_msg: "success" },
+					organic: [
+						{
+							title: "Coding plan hit",
+							link: "https://cp.example.com",
+							snippet: "found",
+							date: "2026-08-20",
+						},
+						{ title: "Coding plan two", link: "https://cp.example.com/two", snippet: "second" },
+					],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { executeDirectProviderSearch: run } = await import("../src/websearch/providers.js");
+
+		const config: SearchProviderConfig = {
+			provider: "minimax-cn",
+			apiKey: "sk-cp-test-key",
+			baseUrl: "https://api.minimaxi.com/anthropic/v1/messages",
+			maxResults: 5,
+		};
+
+		const results = await run(config, { query: "test query", maxResults: 5 }, new AbortController().signal);
+
+		expect(fetchMock).toHaveBeenCalledOnce();
+		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe("https://api.minimaxi.com/v1/coding_plan/search");
+		const headers = init.headers as Record<string, string>;
+		expect(headers["Authorization"]).toBe("Bearer sk-cp-test-key");
+		expect(headers["MM-API-Source"]).toBe("pi-websearch");
+		expect(JSON.parse(init.body as string)).toEqual({ q: "test query" });
+		expect(results).toEqual([
+			{ title: "Coding plan hit", url: "https://cp.example.com", snippet: "found", publishedAt: "2026-08-20" },
+			{ title: "Coding plan two", url: "https://cp.example.com/two", snippet: "second" },
+		]);
+	});
+
+	it("#given token plan key on the global provider #when searching #then targets the international host", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ base_resp: { status_code: 0 }, organic: [] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { executeDirectProviderSearch: run } = await import("../src/websearch/providers.js");
+
+		const config: SearchProviderConfig = {
+			provider: "minimax",
+			apiKey: "sk-cp-test-key",
+			baseUrl: "https://api.minimax.io/anthropic/v1/messages",
+			maxResults: 5,
+		};
+
+		await run(config, { query: "test query", maxResults: 5 }, new AbortController().signal);
+
+		const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe("https://api.minimax.io/v1/coding_plan/search");
+	});
+
+	it("#given token plan key with a failed base_resp #when searching #then surfaces the status message", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ base_resp: { status_code: 1004, status_msg: "login fail" }, organic: [] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { executeDirectProviderSearch: run } = await import("../src/websearch/providers.js");
+
+		const config: SearchProviderConfig = {
+			provider: "minimax-cn",
+			apiKey: "sk-cp-test-key",
+			maxResults: 5,
+		};
+
+		await expect(run(config, { query: "test query", maxResults: 5 }, new AbortController().signal)).rejects.toThrow(
+			"login fail",
+		);
+	});
+
+	it("#given token plan key with a non-numeric or missing base_resp status #when searching #then fails instead of returning empty success", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(
+				new Response(
+					JSON.stringify({ base_resp: { status_code: "1004", status_msg: "login fail" }, organic: [] }),
+					{ status: 200, headers: { "content-type": "application/json" } },
+				),
+			);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { executeDirectProviderSearch: run } = await import("../src/websearch/providers.js");
+
+		const config: SearchProviderConfig = {
+			provider: "minimax-cn",
+			apiKey: "sk-cp-test-key",
+			maxResults: 5,
+		};
+
+		await expect(run(config, { query: "test query", maxResults: 5 }, new AbortController().signal)).rejects.toThrow(
+			"login fail",
+		);
+
+		// envelope without base_resp at all
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ organic: [] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		await expect(run(config, { query: "test query", maxResults: 5 }, new AbortController().signal)).rejects.toThrow(
+			"code undefined",
+		);
+	});
+
+	it("#given headers-only resolved auth #when searching #then extracts the bearer token and x-api-key header", async () => {
+		const okBody = () => JSON.stringify({ base_resp: { status_code: 0 }, organic: [] });
+		const fetchMock = vi
+			.fn()
+			.mockImplementation(
+				async () => new Response(okBody(), { status: 200, headers: { "content-type": "application/json" } }),
+			);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { executeDirectProviderSearch: run } = await import("../src/websearch/providers.js");
+
+		// given: coding-plan branch with only an Authorization header (native headers-only route)
+		const bearerOnly: SearchRoute = {
+			id: "native",
+			source: "native",
+			provider: "minimax-cn",
+			adapter: "minimax-cn",
+			headers: { Authorization: "Bearer sk-cp-from-header" },
+			maxResults: 5,
+		};
+
+		// when
+		await run(bearerOnly, { query: "test query", maxResults: 5 }, new AbortController().signal);
+
+		// then
+		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe("https://api.minimaxi.com/v1/coding_plan/search");
+		const headers = init.headers as Record<string, string>;
+		expect(headers["Authorization"]).toBe("Bearer sk-cp-from-header");
+
+		// given: paygo branch with only an x-api-key header
+		const paygoHeaderOnly: SearchRoute = {
+			id: "native",
+			source: "native",
+			provider: "minimax-cn",
+			adapter: "minimax-cn",
+			headers: { "x-api-key": "sk-api-from-header" },
+			baseUrl: "https://api.minimaxi.com/anthropic/v1/messages",
+			maxResults: 5,
+		};
+
+		// when
+		await run(paygoHeaderOnly, { query: "test query", maxResults: 5 }, new AbortController().signal);
+
+		// then
+		const [, paygoInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+		const paygoHeaders = paygoInit.headers as Record<string, string>;
+		expect(paygoHeaders["x-api-key"]).toBe("sk-api-from-header");
+	});
+
+	it("#given pay-as-you-go key #when searching #then fetches the Anthropic Messages endpoint and skips the coding-plan REST call", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					content: [
+						{
+							type: "web_search_tool_result",
+							content: [
+								{
+									type: "web_search_result",
+									title: "Anthropic hit",
+									url: "https://anthropic.example.com",
+									snippet: "snip",
+								},
+							],
+						},
+					],
+				}),
+				{ status: 200, headers: { "content-type": "application/json" } },
+			),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const { executeDirectProviderSearch: run } = await import("../src/websearch/providers.js");
+
+		const config: SearchProviderConfig = {
+			provider: "minimax-cn",
+			apiKey: "sk-api-test-key",
+			baseUrl: "https://api.minimaxi.com/anthropic/v1/messages",
+			model: "minimax-M2.5",
+			maxResults: 5,
+		};
+
+		const results = await run(config, { query: "test query", maxResults: 5 }, new AbortController().signal);
+
+		expect(fetchMock).toHaveBeenCalledOnce();
+		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe("https://api.minimaxi.com/anthropic/v1/messages");
+		const headers = init.headers as Record<string, string>;
+		expect(headers["x-api-key"]).toBe("sk-api-test-key");
+		expect(headers["anthropic-version"]).toBe("2023-06-01");
+		expect(JSON.parse(init.body as string)).toMatchObject({
+			model: "minimax-M2.5",
+			tools: [{ type: "web_search_20250305", name: "web_search" }],
+		});
+		expect(results).toEqual([{ title: "Anthropic hit", url: "https://anthropic.example.com", snippet: "snip" }]);
 	});
 });

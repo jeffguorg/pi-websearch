@@ -16,7 +16,10 @@ export type SearchProvider =
 	| "perplexity"
 	| "xai"
 	| "kimi"
-	| "deepseek";
+	| "deepseek"
+	| "minimax-cn"
+	| "minimax"
+	| "zai-coding-cn";
 
 export type SearchContextSize = "low" | "medium" | "high";
 export type CodexSearchMode = "cached" | "live";

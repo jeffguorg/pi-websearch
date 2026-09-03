@@ -1,4 +1,5 @@
 import { isAllowedNativeProviderBaseUrl } from "./provider-endpoints.js";
+import { bearerToken } from "./providers/shared.js";
 import { getExternalBindings } from "./providers.js";
 import type { JsonObject, SearchRoute } from "./types.js";
 
@@ -57,6 +58,22 @@ function directNativeMapping(model: NativeModelInfo): NativeProviderMapping | nu
 	// claim support for OpenAI Responses until a separate adapter exists.
 	if (model.provider === "deepseek" && model.api === "anthropic-messages") {
 		return { adapter: "deepseek", resource: "messages" };
+	}
+
+	// All Zhipu Coding Plan models share the same remote web-search-prime MCP
+	// server; the adapter ignores the chat baseUrl and always targets the MCP
+	// endpoint, consuming the plan's bundled MCP quota.
+	if (model.provider === "zai-coding-cn" || model.provider === "zai-coding") {
+		return { adapter: "zai-coding-cn", resource: "mcp/web_search_prime/mcp" };
+	}
+
+	// All MiniMax models share the same adapter; the provider module dispatches
+	// by key prefix (sk-cp- → bundled coding-plan REST search, otherwise →
+	// server-tool web_search on the Anthropic Messages endpoint) and derives the
+	// regional host from the model's baseUrl (minimax-cn → api.minimaxi.com,
+	// minimax → api.minimax.io).
+	if (model.provider === "minimax-cn" || model.provider === "minimax") {
+		return { adapter: "minimax-cn", resource: "messages" };
 	}
 
 	return null;
@@ -135,18 +152,13 @@ function activeOpenRouterRouting(model: NativeModelInfo): JsonObject | undefined
 	return isJsonObject(compat.openRouterRouting) ? compat.openRouterRouting : undefined;
 }
 
+const AUTH_HEADER_NAMES = new Set(["authorization", "x-api-key", "api-key", "x-goog-api-key"]);
+
 function hasResolvedAuthentication(auth: Extract<NativeAuthResult, { ok: true }>): boolean {
 	if (auth.apiKey) return true;
-	const authHeaderNames = new Set(["authorization", "x-api-key", "api-key", "x-goog-api-key"]);
 	return Object.entries(auth.headers ?? {}).some(
-		([name, value]) => authHeaderNames.has(name.toLowerCase()) && value.trim().length > 0,
+		([name, value]) => AUTH_HEADER_NAMES.has(name.toLowerCase()) && value.trim().length > 0,
 	);
-}
-
-function bearerToken(headers: Record<string, string> | undefined): string | undefined {
-	const authorization = Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "authorization")?.[1];
-	const match = authorization?.match(/^Bearer\s+(.+)$/i);
-	return match?.[1]?.trim() || undefined;
 }
 
 export type NativeRouteResolution =

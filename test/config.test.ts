@@ -509,6 +509,33 @@ describe("validateProviderConfig", () => {
 		expect(result.ok).toBe(true);
 	});
 
+	it("#given minimax-cn without api key #when validating #then provider is invalid", () => {
+		// given / when
+		const result = validateProviderConfig({ provider: "minimax-cn" });
+
+		// then
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.reason).toBe("missing_api_key");
+		}
+	});
+
+	it("#given minimax-cn with token plan api key #when validating #then provider is valid", () => {
+		// given / when
+		const result = validateProviderConfig({ provider: "minimax-cn", apiKey: "sk-cp-test" });
+
+		// then
+		expect(result.ok).toBe(true);
+	});
+
+	it("#given minimax-cn with pay-as-you-go api key #when validating #then provider is valid", () => {
+		// given / when
+		const result = validateProviderConfig({ provider: "minimax-cn", apiKey: "sk-api-test" });
+
+		// then
+		expect(result.ok).toBe(true);
+	});
+
 	it("#given codex without api key #when validating #then provider is invalid", () => {
 		// given / when
 		const result = validateProviderConfig({ provider: "codex" });

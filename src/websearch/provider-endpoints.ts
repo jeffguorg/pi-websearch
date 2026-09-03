@@ -16,6 +16,9 @@ const DEFAULT_PROVIDER_URLS: Record<string, string> = {
 	xai: "https://api.x.ai/v1/responses",
 	kimi: "https://api.kimi.com/coding/v1/search",
 	deepseek: "https://api.deepseek.com/anthropic/v1/messages",
+	"minimax-cn": "https://api.minimaxi.com/anthropic/v1/messages",
+	minimax: "https://api.minimax.io/anthropic/v1/messages",
+	"zai-coding-cn": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
 };
 
 export function defaultProviderUrl(provider: string): string | undefined {

@@ -158,3 +158,10 @@ export function parseObjectPayload(payload: unknown): JsonObject {
 	if (isJsonObject(payload)) return payload;
 	return {};
 }
+
+/** Extract the bearer token from resolved auth headers, if any. */
+export function bearerToken(headers: Record<string, string> | undefined): string | undefined {
+	const authorization = Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "authorization")?.[1];
+	const match = authorization?.match(/^Bearer\s+(.+)$/i);
+	return match?.[1]?.trim() || undefined;
+}
