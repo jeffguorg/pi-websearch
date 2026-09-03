@@ -5,6 +5,7 @@ export type SearchProvider =
 	| "tavily"
 	| "brave"
 	| "duckduckgo-html"
+	| "searxng"
 	| "serper"
 	| "google-cse"
 	| "z-ai"
@@ -26,6 +27,9 @@ export interface SearchProviderConfig {
 	provider: string;
 	apiKey?: string;
 	baseUrl?: string;
+	/** Extra request headers merged into every call (e.g. reverse-proxy auth
+	 *  in front of a self-hosted SearXNG). Overrides adapter-generated headers. */
+	headers?: Record<string, string>;
 	searchEngineId?: string;
 	maxResults?: number;
 	model?: string;
@@ -160,4 +164,4 @@ export type ConfigLoadResult =
 
 export type ProviderValidationResult =
 	| { ok: true; config: SearchProviderEntry }
-	| { ok: false; reason: "invalid_config" | "missing_api_key"; message: string };
+	| { ok: false; reason: "invalid_config" | "missing_api_key" | "missing_config"; message: string };

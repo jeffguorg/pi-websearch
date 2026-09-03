@@ -652,4 +652,120 @@ describe("validateProviderConfig", () => {
 		expect(linkLocalUpperRange.ok).toBe(false);
 		expect(mappedLoopback.ok).toBe(false);
 	});
+
+	it("#given searxng without baseUrl #when validating #then provider reports missing_config", () => {
+		// given / when
+		const result = validateProviderConfig({ provider: "searxng" });
+
+		// then
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.reason).toBe("missing_config");
+			expect(result.message).toContain("baseUrl");
+		}
+	});
+
+	it("#given searxng with private http baseUrl #when validating #then provider is valid without apiKey", () => {
+		// given / when
+		const result = validateProviderConfig({ provider: "searxng", baseUrl: "http://100.64.0.12:8888" });
+
+		// then
+		expect(result.ok).toBe(true);
+	});
+
+	it("#given searxng baseUrl with embedded credentials #when validating #then config is invalid", () => {
+		// given / when
+		const result = validateProviderConfig({ provider: "searxng", baseUrl: "http://user:pass@100.64.0.12:8888" });
+
+		// then
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.reason).toBe("invalid_config");
+	});
+
+	it("#given optional searxng without baseUrl in fallback_chain #when loading #then skips it and keeps other entries", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({
+				fallback_chain: [
+					{ id: "lan-searx", provider: "searxng", optional: true },
+					{ id: "ddg", provider: "duckduckgo-html" },
+				],
+			}),
+			"utf8",
+		);
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(true);
+			if (result.ok) expect(result.config.providers.map((entry) => entry.id)).toEqual(["ddg"]);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given provider entry with headers #when loading config #then preserves headers", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({
+				providers: [
+					{
+						id: "searx",
+						provider: "searxng",
+						baseUrl: "http://100.64.0.12:8888",
+						headers: { Authorization: "Basic cGk6c2VjcmV0", "X-Empty": "  " },
+					},
+				],
+			}),
+			"utf8",
+		);
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				expect(result.config.providers[0]).toMatchObject({
+					id: "searx",
+					headers: { Authorization: "Basic cGk6c2VjcmV0" },
+				});
+			}
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given non-object headers field #when loading config #then config is invalid", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ provider: "searxng", baseUrl: "http://100.64.0.12:8888", headers: "nope" }),
+			"utf8",
+		);
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(false);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
 });

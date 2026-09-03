@@ -1,10 +1,11 @@
 import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isAllowedProviderBaseUrl } from "./provider-endpoints.js";
+import { isAllowedConfiguredBaseUrl } from "./provider-endpoints.js";
 import { isExternalProvider, isRegisteredProvider } from "./providers.js";
 import type {
 	CodexSearchMode,
+	ConfigLoadFailureReason,
 	ConfigLoadResult,
 	JsonObject,
 	JsonValue,
@@ -84,6 +85,14 @@ function validOptionalStringArray(raw: JsonObject, key: string): boolean {
 	return !(key in raw) || isStringArray(raw[key]);
 }
 
+function optionalHeaders(value: JsonValue | undefined): Record<string, string> | undefined {
+	if (!isJsonObject(value)) return undefined;
+	const entries = Object.entries(value).filter(
+		(entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].trim().length > 0,
+	);
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
 function optionalLocation(value: JsonValue | undefined): SearchUserLocation | undefined {
 	if (!isJsonObject(value)) return undefined;
 	const location: SearchUserLocation = {};
@@ -116,6 +125,7 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 		numberFields.some((key) => !validOptionalNumber(raw, key)) ||
 		!["allowedDomains", "blockedDomains"].every((key) => validOptionalStringArray(raw, key)) ||
 		("optional" in raw && typeof raw["optional"] !== "boolean") ||
+		("headers" in raw && !isJsonObject(raw["headers"])) ||
 		("codexMode" in raw && !oneOf(CODEX_MODES, raw["codexMode"])) ||
 		("searchContextSize" in raw && !oneOf(CONTEXT_SIZES, raw["searchContextSize"])) ||
 		("userLocation" in raw && !isJsonObject(raw["userLocation"])) ||
@@ -140,6 +150,7 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 	const allowedDomains = isStringArray(rawAllowedDomains) ? rawAllowedDomains : undefined;
 	const blockedDomains = isStringArray(rawBlockedDomains) ? rawBlockedDomains : undefined;
 	const userLocation = optionalLocation(raw["userLocation"]);
+	const headers = optionalHeaders(raw["headers"]);
 	const openRouterRouting = isJsonObject(raw["openRouterRouting"]) ? raw["openRouterRouting"] : undefined;
 	const timeoutMs = optionalNumber(raw["timeoutMs"]);
 	const priority = optionalNumber(raw["priority"]);
@@ -157,6 +168,7 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 	if (allowedDomains) config.allowedDomains = allowedDomains;
 	if (blockedDomains) config.blockedDomains = blockedDomains;
 	if (userLocation) config.userLocation = userLocation;
+	if (headers) config.headers = headers;
 	if (openRouterRouting) config.openRouterRouting = openRouterRouting;
 	if (timeoutMs !== undefined) config.timeoutMs = timeoutMs;
 	if (priority !== undefined) config.priority = priority;
@@ -225,12 +237,19 @@ export function validateProviderConfig(config: SearchProviderEntry): ProviderVal
 		return { ok: false, reason: "invalid_config", message: "Provider timeoutMs must be greater than 0." };
 	}
 
-	if (config.baseUrl && !isAllowedProviderBaseUrl(config.baseUrl)) {
+	if (config.baseUrl && !isAllowedConfiguredBaseUrl(config.provider, config.baseUrl)) {
+		const selfHosted = config.provider === "searxng";
 		return {
 			ok: false,
 			reason: "invalid_config",
-			message: `Provider ${config.provider} baseUrl must be a public HTTPS URL without credentials.`,
+			message: selfHosted
+				? `Provider ${config.provider} baseUrl must be an HTTP(S) URL without embedded credentials.`
+				: `Provider ${config.provider} baseUrl must be a public HTTPS URL without credentials.`,
 		};
+	}
+
+	if (config.provider === "searxng" && !config.baseUrl) {
+		return { ok: false, reason: "missing_config", message: "Provider searxng requires baseUrl." };
 	}
 
 	if (config.provider === "google-cse" && !config.searchEngineId) {
@@ -246,9 +265,16 @@ export function validateProviderConfig(config: SearchProviderEntry): ProviderVal
 	}
 
 	// Providers whose key is resolved at request time from the active model
-	// (native routing) don't need an explicit apiKey in config.
-	const NATIVE_KEY_PROVIDERS = new Set(["codex", "openai", "duckduckgo-html"]);
-	if (!NATIVE_KEY_PROVIDERS.has(config.provider) && !isExternalProvider(config.provider) && !hasApiKey(config)) {
+	// (native routing) don't need an explicit apiKey in config; keyless
+	// providers never need one.
+	const NATIVE_KEY_PROVIDERS = new Set(["codex", "openai"]);
+	const KEYLESS_PROVIDERS = new Set(["duckduckgo-html", "searxng"]);
+	if (
+		!NATIVE_KEY_PROVIDERS.has(config.provider) &&
+		!KEYLESS_PROVIDERS.has(config.provider) &&
+		!isExternalProvider(config.provider) &&
+		!hasApiKey(config)
+	) {
 		return { ok: false, reason: "missing_api_key", message: `Provider ${config.provider} requires apiKey.` };
 	}
 
@@ -257,9 +283,7 @@ export function validateProviderConfig(config: SearchProviderEntry): ProviderVal
 
 export function validateWebsearchConfig(
 	config: WebsearchConfig,
-):
-	| { ok: true; config: WebsearchConfig }
-	| { ok: false; reason: "invalid_config" | "missing_api_key"; message: string } {
+): { ok: true; config: WebsearchConfig } | { ok: false; reason: ConfigLoadFailureReason; message: string } {
 	if (!STRATEGIES.includes(config.strategy)) {
 		return { ok: false, reason: "invalid_config", message: `Unsupported routing strategy: ${config.strategy}` };
 	}
@@ -277,7 +301,8 @@ export function validateWebsearchConfig(
 	for (const provider of config.providers) {
 		const validation = validateProviderConfig(provider);
 		if (!validation.ok) {
-			if (provider.optional && validation.reason === "missing_api_key") continue;
+			if (provider.optional && (validation.reason === "missing_api_key" || validation.reason === "missing_config"))
+				continue;
 			return validation;
 		}
 		availableProviders.push(provider);

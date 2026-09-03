@@ -70,6 +70,18 @@ export function isAllowedProviderBaseUrl(baseUrl: string): boolean {
 	return configured !== null && configured.protocol === "https:" && !isPrivateHostname(configured.hostname);
 }
 
+/** Providers that are self-hosted by design. Their baseUrl may use plain HTTP
+ *  and private/loopback hosts (LAN, Tailscale); credentials in the URL remain
+ *  forbidden — put reverse-proxy auth in `headers` instead. */
+const SELF_HOSTED_PROVIDERS = new Set(["searxng"]);
+
+export function isAllowedConfiguredBaseUrl(provider: string, baseUrl: string): boolean {
+	if (SELF_HOSTED_PROVIDERS.has(provider)) {
+		return parseCredentialFreeHttpUrl(baseUrl) !== null;
+	}
+	return isAllowedProviderBaseUrl(baseUrl);
+}
+
 /** Active model endpoints come from Pi's trusted model registry and may be local. */
 export function isAllowedNativeProviderBaseUrl(baseUrl: string): boolean {
 	return parseCredentialFreeHttpUrl(baseUrl) !== null;

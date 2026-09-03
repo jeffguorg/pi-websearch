@@ -83,6 +83,44 @@ describe("buildSearchRequest", () => {
 		expect(request.body).toEqual({ query: "current docs", max_results: 5 });
 	});
 
+	it("#given searxng config #when building request #then appends /search with json format and no credentials", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "searxng", baseUrl: "http://100.64.0.12:8888/" };
+
+		// when
+		const request = buildSearchRequest(config, {
+			query: "pi extension",
+			maxResults: 4,
+			blockedDomains: ["spam.example.com"],
+		});
+
+		// then
+		expect(request.url).toContain("http://100.64.0.12:8888/search?");
+		expect(request.url).toContain("q=pi+extension+-site%3Aspam.example.com");
+		expect(request.url).toContain("format=json");
+		expect(request.init.method).toBe("GET");
+		expect(request.init.headers).toHaveProperty("Accept", "application/json");
+		expect(request.init.headers).not.toHaveProperty("Authorization");
+		expect(request.body).toBeUndefined();
+	});
+
+	it("#given configured headers on an entry #when building request #then headers merge over adapter defaults", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "searxng",
+			baseUrl: "https://searx.example.com",
+			headers: { Authorization: "Basic cGk6c2VjcmV0", "X-Real-Ip": "10.0.0.2" },
+		};
+
+		// when
+		const request = buildSearchRequest(config, { query: "behind proxy", maxResults: 4 });
+
+		// then
+		expect(request.init.headers).toHaveProperty("Authorization", "Basic cGk6c2VjcmV0");
+		expect(request.init.headers).toHaveProperty("X-Real-Ip", "10.0.0.2");
+		expect(request.init.headers).toHaveProperty("Accept", "application/json");
+	});
+
 	it("#given allowed domain filter #when building brave request #then maps filter into provider query", () => {
 		// given
 		const config: SearchProviderConfig = { provider: "brave", apiKey: "brave-test" };
@@ -590,6 +628,39 @@ describe("normalizeSearchResponse", () => {
 		// then
 		expect(results).toEqual([
 			{ title: "Pi Docs", url: "https://docs.example.com/pi", snippet: "Useful docs snippet" },
+		]);
+	});
+
+	it("#given searxng response #when normalizing #then maps results with engines and publishedDate", () => {
+		// given
+		const payload = {
+			results: [
+				{
+					title: "Pi Docs",
+					url: "https://docs.example.com/pi",
+					content: "Useful docs snippet",
+					score: 2.0,
+					engines: ["google", "google cse"],
+					publishedDate: "2026-07-14T00:00:00",
+				},
+				{ title: "No Meta", url: "https://example.com", publishedDate: null },
+			],
+		};
+
+		// when
+		const results = normalizeSearchResponse("searxng", payload);
+
+		// then
+		expect(results).toEqual([
+			{
+				title: "Pi Docs",
+				url: "https://docs.example.com/pi",
+				snippet: "Useful docs snippet",
+				source: "google, google cse",
+				score: 2.0,
+				publishedAt: "2026-07-14T00:00:00",
+			},
+			{ title: "No Meta", url: "https://example.com" },
 		]);
 	});
 

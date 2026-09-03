@@ -9,6 +9,7 @@ import { openAiCodexResponsesProvider } from "./providers/openai-codex-responses
 import { openAiResponsesProvider } from "./providers/openai-responses.js";
 import { openRouterProvider } from "./providers/openrouter.js";
 import { perplexityProvider } from "./providers/perplexity.js";
+import { searxngProvider } from "./providers/searxng.js";
 import { serperProvider } from "./providers/serper.js";
 import type { ProviderModule, SearchProviderExtension } from "./providers/shared.js";
 import { isJsonObject, parseObjectPayload, resolveDomainFilters } from "./providers/shared.js";
@@ -29,6 +30,7 @@ const PROVIDER_MODULES: Record<string, ProviderModule> = {
 	tavily: tavilyProvider,
 	brave: braveProvider,
 	"duckduckgo-html": duckDuckGoHtmlProvider,
+	searxng: searxngProvider,
 	serper: serperProvider,
 	"google-cse": googleCseProvider,
 	"z-ai": zAiProvider,

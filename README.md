@@ -132,6 +132,7 @@ An optional entry can use `"optional": true`. If its provider plugin is not inst
 Supported providers:
 
 - `duckduckgo-html`: DuckDuckGo HTML search endpoint. Requires no `apiKey`; used as the zero-config default.
+- `searxng`: self-hosted SearXNG metasearch. Requires `baseUrl` (plain HTTP and private/LAN hosts are allowed for this provider only); no `apiKey`. The instance must enable `formats: [json]` in `settings.yml`, otherwise it answers with HTTP 403. Reverse-proxy auth can be supplied via `headers`.
 - `exa`: direct Exa search. Requires `apiKey`.
 - `tavily`: direct Tavily search. Requires `apiKey`.
 - `brave`: Brave Search API. Requires `apiKey`.
@@ -146,7 +147,7 @@ Supported providers:
 - `xai`: xAI Responses API hosted `web_search` tool. Requires `apiKey`.
 - `deepseek`: DeepSeek's Anthropic-compatible endpoint with the server-side `web_search_20260209` tool. The key is resolved automatically from the active DeepSeek model, so no config entry is required.
 
-Provider-specific optional fields include `id`, `baseUrl`, `model`, `maxResults`, `priority`, `weight`, `searchContextSize`, `codexMode`, `allowedDomains`, `blockedDomains`, and `userLocation` where supported. `baseUrl` is supported for every provider and must be a public HTTPS URL without embedded credentials.
+Provider-specific optional fields include `id`, `baseUrl`, `headers`, `model`, `maxResults`, `priority`, `weight`, `searchContextSize`, `codexMode`, `allowedDomains`, `blockedDomains`, and `userLocation` where supported. `baseUrl` is supported for every provider and must be a public HTTPS URL without embedded credentials; self-hosted providers (`searxng`) may use plain HTTP and private hosts instead. `headers` is a string map merged into every request of that entry — use it for reverse-proxy authentication in front of self-hosted instances; it is stored in plaintext like `apiKey`.
 
 Tool text and TUI output include the selected provider entry, routing strategy, and fallback attempts so the agent can see which provider produced the result.
 
