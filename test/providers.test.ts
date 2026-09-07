@@ -49,7 +49,7 @@ describe("buildSearchRequest", () => {
 			};
 
 			// when
-			const request = buildSearchRequest(config, { query: "override endpoint", maxResults: 4 });
+			const request = buildSearchRequest({ ...config, maxResults: 4 }, { query: "override endpoint" });
 
 			// then
 			expect(request.url.startsWith(`https://gateway.example.com/${provider}`)).toBe(true);
@@ -61,7 +61,7 @@ describe("buildSearchRequest", () => {
 		const config: SearchProviderConfig = { provider: "exa", apiKey: "exa-test" };
 
 		// when
-		const request = buildSearchRequest(config, { query: "pi extension", maxResults: 4 });
+		const request = buildSearchRequest({ ...config, maxResults: 4 }, { query: "pi extension" });
 
 		// then
 		expect(request.url).toBe("https://api.exa.ai/search");
@@ -75,7 +75,7 @@ describe("buildSearchRequest", () => {
 		const config: SearchProviderConfig = { provider: "tavily", apiKey: "tvly-test" };
 
 		// when
-		const request = buildSearchRequest(config, { query: "current docs", maxResults: 5 });
+		const request = buildSearchRequest({ ...config, maxResults: 5 }, { query: "current docs" });
 
 		// then
 		expect(request.url).toBe("https://api.tavily.com/search");
@@ -88,11 +88,13 @@ describe("buildSearchRequest", () => {
 		const config: SearchProviderConfig = { provider: "searxng", baseUrl: "http://100.64.0.12:8888/" };
 
 		// when
-		const request = buildSearchRequest(config, {
-			query: "pi extension",
-			maxResults: 4,
-			blockedDomains: ["spam.example.com"],
-		});
+		const request = buildSearchRequest(
+			{ ...config, maxResults: 4 },
+			{
+				query: "pi extension",
+				blockedDomains: ["spam.example.com"],
+			},
+		);
 
 		// then
 		expect(request.url).toContain("http://100.64.0.12:8888/search?");
@@ -113,7 +115,7 @@ describe("buildSearchRequest", () => {
 		};
 
 		// when
-		const request = buildSearchRequest(config, { query: "behind proxy", maxResults: 4 });
+		const request = buildSearchRequest({ ...config, maxResults: 4 }, { query: "behind proxy" });
 
 		// then
 		expect(request.init.headers).toHaveProperty("Authorization", "Basic cGk6c2VjcmV0");
@@ -126,11 +128,13 @@ describe("buildSearchRequest", () => {
 		const config: SearchProviderConfig = { provider: "brave", apiKey: "brave-test" };
 
 		// when
-		const request = buildSearchRequest(config, {
-			query: "node fetch",
-			maxResults: 2,
-			allowedDomains: ["nodejs.org"],
-		});
+		const request = buildSearchRequest(
+			{ ...config, maxResults: 2 },
+			{
+				query: "node fetch",
+				allowedDomains: ["nodejs.org"],
+			},
+		);
 
 		// then
 		expect(request.url).toContain("site%3Anodejs.org");
@@ -142,11 +146,13 @@ describe("buildSearchRequest", () => {
 		const config: SearchProviderConfig = { provider: "duckduckgo-html" };
 
 		// when
-		const request = buildSearchRequest(config, {
-			query: "zero config search",
-			maxResults: 4,
-			blockedDomains: ["spam.example.com"],
-		});
+		const request = buildSearchRequest(
+			{ ...config, maxResults: 4 },
+			{
+				query: "zero config search",
+				blockedDomains: ["spam.example.com"],
+			},
+		);
 
 		// then
 		expect(request.url).toContain("https://html.duckduckgo.com/html/");
@@ -164,11 +170,13 @@ describe("buildSearchRequest", () => {
 		};
 
 		// when
-		const request = buildSearchRequest(config, {
-			query: "sdk docs",
-			maxResults: 3,
-			allowedDomains: ["api.example.com", "other.example.com"],
-		});
+		const request = buildSearchRequest(
+			{ ...config, maxResults: 3 },
+			{
+				query: "sdk docs",
+				allowedDomains: ["api.example.com", "other.example.com"],
+			},
+		);
 
 		// then
 		expect(request.body).toEqual({ query: "sdk docs", numResults: 3, includeDomains: ["api.example.com"] });
@@ -182,11 +190,13 @@ describe("buildSearchRequest", () => {
 		};
 
 		// when
-		const request = buildSearchRequest(config, {
-			query: "sdk docs",
-			maxResults: 3,
-			blockedDomains: ["docs.example.com"],
-		});
+		const request = buildSearchRequest(
+			{ ...config, maxResults: 3 },
+			{
+				query: "sdk docs",
+				blockedDomains: ["docs.example.com"],
+			},
+		);
 
 		// then
 		expect(request.body).toEqual({ query: "sdk docs", numResults: 3, includeDomains: ["api.example.com"] });
@@ -201,11 +211,13 @@ describe("buildSearchRequest", () => {
 		};
 
 		// when
-		const request = buildSearchRequest(config, {
-			query: "node fetch",
-			maxResults: 2,
-			allowedDomains: ["blocked.example.com", "nodejs.org"],
-		});
+		const request = buildSearchRequest(
+			{ ...config, maxResults: 2 },
+			{
+				query: "node fetch",
+				allowedDomains: ["blocked.example.com", "nodejs.org"],
+			},
+		);
 
 		// then
 		expect(request.url).not.toContain("blocked.example.com");
@@ -217,7 +229,7 @@ describe("buildSearchRequest", () => {
 		const config: SearchProviderConfig = { provider: "z-ai", apiKey: "zai-test" };
 
 		// when
-		const request = buildSearchRequest(config, { query: "financial news", maxResults: 15 });
+		const request = buildSearchRequest({ ...config, maxResults: 15 }, { query: "financial news" });
 
 		// then
 		expect(request.url).toBe("https://api.z.ai/api/paas/v4/web_search");
@@ -237,7 +249,7 @@ describe("buildSearchRequest", () => {
 		};
 
 		// when
-		const request = buildSearchRequest(config, { query: "latest OpenAI web search docs", maxResults: 5 });
+		const request = buildSearchRequest({ ...config, maxResults: 5 }, { query: "latest OpenAI web search docs" });
 
 		// then
 		expect(request.url).toBe("https://api.openai.com/v1/responses");
@@ -256,7 +268,6 @@ describe("buildSearchRequest", () => {
 		const token = codexToken();
 		const route: SearchRoute = {
 			id: "native",
-			source: "native",
 			provider: "openai-codex",
 			adapter: "openai-codex-responses",
 			apiKey: token,
@@ -264,7 +275,7 @@ describe("buildSearchRequest", () => {
 			model: "gpt-5.6-sol",
 		};
 
-		const request = buildSearchRequest(route, { query: "current Codex docs", maxResults: 5 });
+		const request = buildSearchRequest({ ...route, maxResults: 5 }, { query: "current Codex docs" });
 
 		expect(request.url).toBe("https://chatgpt.com/backend-api/codex/responses");
 		expect(request.init.headers).toMatchObject({
@@ -344,7 +355,7 @@ describe("buildSearchRequest", () => {
 		};
 
 		// when
-		const request = buildSearchRequest(config, { query: "latest docs", maxResults: 5 });
+		const request = buildSearchRequest({ ...config, maxResults: 5 }, { query: "latest docs" });
 
 		// then
 		expect(request.body).toEqual({
@@ -365,7 +376,7 @@ describe("buildSearchRequest", () => {
 		};
 
 		// when
-		const request = buildSearchRequest(config, { query: "search api docs", maxResults: 25 });
+		const request = buildSearchRequest({ ...config, maxResults: 25 }, { query: "search api docs" });
 
 		// then
 		expect(request.url).toBe("https://api.perplexity.ai/search");
@@ -389,7 +400,7 @@ describe("buildSearchRequest", () => {
 		};
 
 		// when
-		const request = buildSearchRequest(config, { query: "search api docs", maxResults: 25 });
+		const request = buildSearchRequest({ ...config, maxResults: 25 }, { query: "search api docs" });
 
 		// then
 		expect(request.url).toBe("https://api.perplexity.ai/chat/completions");
@@ -412,7 +423,7 @@ describe("buildSearchRequest", () => {
 		};
 
 		// when
-		const request = buildSearchRequest(config, { query: "current xai docs", maxResults: 5 });
+		const request = buildSearchRequest({ ...config, maxResults: 5 }, { query: "current xai docs" });
 
 		// then
 		expect(request.url).toBe("https://api.x.ai/v1/responses");
@@ -437,7 +448,7 @@ describe("buildSearchRequest", () => {
 		};
 
 		// when
-		const request = buildSearchRequest(config, { query: "current anthropic search docs", maxResults: 5 });
+		const request = buildSearchRequest({ ...config, maxResults: 5 }, { query: "current anthropic search docs" });
 
 		// then
 		expect(request.url).toBe("https://anthropic.gateway.example.com/v1/messages");
@@ -465,7 +476,7 @@ describe("buildSearchRequest", () => {
 		};
 
 		// when
-		const request = buildSearchRequest(config, { query: "financial news", maxResults: 15 });
+		const request = buildSearchRequest({ ...config, maxResults: 15 }, { query: "financial news" });
 
 		// then
 		expect(request.url).toBe("https://api.z.ai/chat/completions");
@@ -492,7 +503,6 @@ describe("buildSearchRequest", () => {
 	it("#given active OpenRouter alias #when building request #then uses OpenRouter web plugin", () => {
 		const route: SearchRoute = {
 			id: "native",
-			source: "native",
 			provider: "openrouter",
 			adapter: "openrouter",
 			apiKey: "openrouter-test",
@@ -501,11 +511,13 @@ describe("buildSearchRequest", () => {
 			openRouterRouting: { only: ["anthropic"], data_collection: "deny", zdr: true },
 		};
 
-		const request = buildSearchRequest(route, {
-			query: "current docs",
-			maxResults: 5,
-			allowedDomains: ["example.com"],
-		});
+		const request = buildSearchRequest(
+			{ ...route, maxResults: 5 },
+			{
+				query: "current docs",
+				allowedDomains: ["example.com"],
+			},
+		);
 
 		expect(request.url).toBe("https://openrouter.ai/api/v1/chat/completions");
 		expect(request.init.headers["Authorization"]).toBe("Bearer openrouter-test");
@@ -520,7 +532,6 @@ describe("buildSearchRequest", () => {
 	it("#given native registry headers #when building request #then resolved headers replace adapter authentication", () => {
 		const authorizationRoute: SearchRoute = {
 			id: "native",
-			source: "native",
 			provider: "openai",
 			adapter: "openai",
 			baseUrl: "https://gateway.example.com/v1/responses",
@@ -532,8 +543,8 @@ describe("buildSearchRequest", () => {
 			headers: { "x-api-key": "gateway-key" },
 		};
 
-		const authorizationRequest = buildSearchRequest(authorizationRoute, { query: "headers", maxResults: 5 });
-		const apiKeyRequest = buildSearchRequest(apiKeyRoute, { query: "headers", maxResults: 5 });
+		const authorizationRequest = buildSearchRequest({ ...authorizationRoute, maxResults: 5 }, { query: "headers" });
+		const apiKeyRequest = buildSearchRequest({ ...apiKeyRoute, maxResults: 5 }, { query: "headers" });
 
 		expect(authorizationRequest.init.headers["Authorization"]).toBe("Bearer resolved");
 		expect(authorizationRequest.init.headers["x-tenant"]).toBe("team");
@@ -546,7 +557,7 @@ describe("buildSearchRequest", () => {
 		const config: SearchProviderConfig = { provider: "kimi", apiKey: "kimi-test" };
 
 		// when
-		const request = buildSearchRequest(config, { query: "current docs", maxResults: 5 });
+		const request = buildSearchRequest({ ...config, maxResults: 5 }, { query: "current docs" });
 
 		// then
 		expect(request.url).toBe("https://api.kimi.com/coding/v1/search");
@@ -587,8 +598,8 @@ describe("provider registration", () => {
 		});
 
 		const results = await executeDirectProviderSearch(
-			{ provider: "direct-test" },
-			{ query: "direct plugin", maxResults: 3 },
+			{ provider: "direct-test", maxResults: 3 },
+			{ query: "direct plugin" },
 			new AbortController().signal,
 		);
 
@@ -986,7 +997,7 @@ describe("minimax-cn direct adapter", () => {
 			maxResults: 5,
 		};
 
-		const results = await run(config, { query: "test query", maxResults: 5 }, new AbortController().signal);
+		const results = await run(config, { query: "test query" }, new AbortController().signal);
 
 		expect(fetchMock).toHaveBeenCalledOnce();
 		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -1019,7 +1030,7 @@ describe("minimax-cn direct adapter", () => {
 			maxResults: 5,
 		};
 
-		await run(config, { query: "test query", maxResults: 5 }, new AbortController().signal);
+		await run(config, { query: "test query" }, new AbortController().signal);
 
 		const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
 		expect(url).toBe("https://api.minimax.io/v1/coding_plan/search");
@@ -1042,9 +1053,7 @@ describe("minimax-cn direct adapter", () => {
 			maxResults: 5,
 		};
 
-		await expect(run(config, { query: "test query", maxResults: 5 }, new AbortController().signal)).rejects.toThrow(
-			"login fail",
-		);
+		await expect(run(config, { query: "test query" }, new AbortController().signal)).rejects.toThrow("login fail");
 	});
 
 	it("#given token plan key with a non-numeric or missing base_resp status #when searching #then fails instead of returning empty success", async () => {
@@ -1066,9 +1075,7 @@ describe("minimax-cn direct adapter", () => {
 			maxResults: 5,
 		};
 
-		await expect(run(config, { query: "test query", maxResults: 5 }, new AbortController().signal)).rejects.toThrow(
-			"login fail",
-		);
+		await expect(run(config, { query: "test query" }, new AbortController().signal)).rejects.toThrow("login fail");
 
 		// envelope without base_resp at all
 		fetchMock.mockResolvedValue(
@@ -1077,7 +1084,7 @@ describe("minimax-cn direct adapter", () => {
 				headers: { "content-type": "application/json" },
 			}),
 		);
-		await expect(run(config, { query: "test query", maxResults: 5 }, new AbortController().signal)).rejects.toThrow(
+		await expect(run(config, { query: "test query" }, new AbortController().signal)).rejects.toThrow(
 			"code undefined",
 		);
 	});
@@ -1096,7 +1103,6 @@ describe("minimax-cn direct adapter", () => {
 		// given: coding-plan branch with only an Authorization header (native headers-only route)
 		const bearerOnly: SearchRoute = {
 			id: "native",
-			source: "native",
 			provider: "minimax-cn",
 			adapter: "minimax-cn",
 			headers: { Authorization: "Bearer sk-cp-from-header" },
@@ -1104,7 +1110,7 @@ describe("minimax-cn direct adapter", () => {
 		};
 
 		// when
-		await run(bearerOnly, { query: "test query", maxResults: 5 }, new AbortController().signal);
+		await run(bearerOnly, { query: "test query" }, new AbortController().signal);
 
 		// then
 		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -1115,7 +1121,6 @@ describe("minimax-cn direct adapter", () => {
 		// given: paygo branch with only an x-api-key header
 		const paygoHeaderOnly: SearchRoute = {
 			id: "native",
-			source: "native",
 			provider: "minimax-cn",
 			adapter: "minimax-cn",
 			headers: { "x-api-key": "sk-api-from-header" },
@@ -1124,7 +1129,7 @@ describe("minimax-cn direct adapter", () => {
 		};
 
 		// when
-		await run(paygoHeaderOnly, { query: "test query", maxResults: 5 }, new AbortController().signal);
+		await run(paygoHeaderOnly, { query: "test query" }, new AbortController().signal);
 
 		// then
 		const [, paygoInit] = fetchMock.mock.calls[1] as [string, RequestInit];
@@ -1165,7 +1170,7 @@ describe("minimax-cn direct adapter", () => {
 			maxResults: 5,
 		};
 
-		const results = await run(config, { query: "test query", maxResults: 5 }, new AbortController().signal);
+		const results = await run(config, { query: "test query" }, new AbortController().signal);
 
 		expect(fetchMock).toHaveBeenCalledOnce();
 		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];

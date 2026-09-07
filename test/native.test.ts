@@ -75,7 +75,6 @@ describe("active native route", () => {
 			const entry = await buildNativeEntry(testCase.model, registry());
 			expect(entry).toEqual({
 				id: "native",
-				source: "native",
 				provider: testCase.model.provider,
 				adapter: testCase.adapter,
 				apiKey: "native-test",

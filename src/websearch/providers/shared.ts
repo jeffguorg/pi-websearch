@@ -9,6 +9,9 @@ import type {
 
 const EMPTY_DOMAIN_SENTINEL = "invalid.invalid";
 
+/** Result cap applied when a provider entry does not configure maxResults. */
+export const DEFAULT_MAX_RESULTS = 10;
+
 export interface BuildContext {
 	config: SearchProviderConfig;
 	request: SearchRequest;
@@ -18,6 +21,9 @@ export interface BuildContext {
 }
 
 export interface ProviderModule {
+	/** Largest result count the upstream API accepts per request. Undefined when
+	 * the provider takes no result-count parameter; client-side slicing still applies. */
+	maxResultsLimit?: number;
 	buildRequest?(ctx: BuildContext): BuiltSearchRequest;
 	parseResponseBody?(bodyText: string): JsonObject;
 	normalizeResponse?(data: JsonObject): SearchResultItem[];

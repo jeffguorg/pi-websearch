@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createSearchRoutingState, formatSearchText, performSearch } from "../src/websearch/search.js";
+import { formatSearchText, performSearch } from "../src/websearch/search.js";
 import type { SearchDetails, SearchRoute, WebsearchConfig } from "../src/websearch/types.js";
 
 function jsonResponse(payload: object, status = 200): Response {
@@ -10,7 +10,6 @@ function jsonResponse(payload: object, status = 200): Response {
 function nativeRoute(): SearchRoute {
 	return {
 		id: "native",
-		source: "native",
 		provider: "openai",
 		adapter: "openai",
 		apiKey: "native-test",
@@ -36,9 +35,8 @@ describe("performSearch", () => {
 			});
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: true,
-			auto: true,
+			appendProvidersAsFallback: true,
+			enableNative: true,
 			providers: [
 				{
 					id: "primary",
@@ -52,18 +50,7 @@ describe("performSearch", () => {
 		};
 
 		// when
-		const details = await performSearch(
-			config,
-			{ query: "route test", maxResults: 3 },
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{
-				useFallback: true,
-				retryOnEmpty: false,
-			},
-		);
+		const details = await performSearch(config, { query: "route test" });
 
 		// then
 		expect(requestedUrls).toEqual(["https://gateway.example.com/primary", "https://gateway.example.com/fallback"]);
@@ -82,82 +69,39 @@ describe("performSearch", () => {
 		expect(formatSearchText(details)).toContain("Routing attempts: tavily/primary failed");
 	});
 
-	it("#given round robin providers #when searching twice #then rotates starting provider", async () => {
+	it("#given fallback disabled #when primary fails #then configured fallback routes are not called", async () => {
 		// given
 		const requestedUrls: string[] = [];
 		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
 			const url = String(input);
 			requestedUrls.push(url);
-			const title = url.includes("one") ? "One" : "Two";
-			return jsonResponse({ results: [{ title, url: `https://${title.toLowerCase()}.example.com`, text: title }] });
-		});
-		const config: WebsearchConfig = {
-			strategy: "round-robin",
-			fallback: false,
-			auto: true,
-			providers: [
-				{ id: "one", provider: "exa", baseUrl: "https://gateway.example.com/one" },
-				{ id: "two", provider: "exa", baseUrl: "https://gateway.example.com/two" },
-			],
-		};
-		const state = createSearchRoutingState(config.providers.length);
-
-		// when
-		const first = await performSearch(config, { query: "rr", maxResults: 1 }, undefined, state);
-		const second = await performSearch(config, { query: "rr", maxResults: 1 }, undefined, state);
-
-		// then
-		expect(requestedUrls).toEqual(["https://gateway.example.com/one", "https://gateway.example.com/two"]);
-		expect(first.entryId).toBe("one");
-		expect(second.entryId).toBe("two");
-	});
-
-	it("#given fill first providers #when first provider has insufficient unique results #then aggregates fallback results", async () => {
-		// given
-		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
-			const url = String(input);
-			if (url.includes("one")) {
-				return jsonResponse({ results: [{ title: "Shared", url: "https://shared.example.com", text: "first" }] });
-			}
+			if (url.includes("primary")) return jsonResponse({ error: "down" }, 503);
 			return jsonResponse({
-				results: [
-					{ title: "Shared duplicate", url: "https://shared.example.com", text: "duplicate" },
-					{ title: "Second", url: "https://second.example.com", text: "second" },
-				],
+				results: [{ title: "Fallback", url: "https://fallback.example.com", text: "fallback result" }],
 			});
 		});
 		const config: WebsearchConfig = {
-			strategy: "fill-first",
-			fallback: true,
-			auto: true,
+			appendProvidersAsFallback: false,
+			enableNative: true,
 			providers: [
-				{ id: "one", provider: "exa", baseUrl: "https://gateway.example.com/one" },
-				{ id: "two", provider: "exa", baseUrl: "https://gateway.example.com/two" },
+				{
+					id: "primary",
+					provider: "tavily",
+					apiKey: "tavily-test",
+					baseUrl: "https://gateway.example.com/primary",
+				},
+				{ id: "fallback", provider: "exa", baseUrl: "https://gateway.example.com/fallback" },
 			],
 		};
 
 		// when
-		const details = await performSearch(
-			config,
-			{ query: "fill", maxResults: 2 },
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{
-				useFallback: true,
-				retryOnEmpty: false,
-			},
-		);
+		const details = await performSearch(config, { query: "route test" });
 
 		// then
-		expect(details.strategy).toBe("fill-first");
-		expect(details.provider).toBe("multiple");
-		expect(details.results.map((result) => ({ url: result.url, route: result.route }))).toEqual([
-			{ url: "https://shared.example.com", route: "exa/one" },
-			{ url: "https://second.example.com", route: "exa/two" },
-		]);
-		expect(details.attempts?.map((attempt) => attempt.entryId)).toEqual(["one", "two"]);
+		expect(requestedUrls).toEqual(["https://gateway.example.com/primary"]);
+		expect(details.entryId).toBe("primary");
+		expect(details.error).toBe("Search failed with HTTP 503: down");
+		expect(details.attempts).toHaveLength(1);
 	});
 
 	it("#given empty results and retry_on_empty disabled #when searching #then returns successful empty result", async () => {
@@ -172,9 +116,8 @@ describe("performSearch", () => {
 			});
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: true,
-			auto: true,
+			appendProvidersAsFallback: true,
+			enableNative: true,
 			providers: [
 				{ id: "primary", provider: "exa", baseUrl: "https://gateway.example.com/primary", priority: 0 },
 				{ id: "fallback", provider: "exa", baseUrl: "https://gateway.example.com/fallback", priority: 1 },
@@ -182,18 +125,7 @@ describe("performSearch", () => {
 		};
 
 		// when
-		const details = await performSearch(
-			config,
-			{ query: "empty route", maxResults: 3 },
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{
-				useFallback: true,
-				retryOnEmpty: false,
-			},
-		);
+		const details = await performSearch(config, { query: "empty route" });
 
 		// then
 		expect(requestedUrls).toEqual(["https://gateway.example.com/primary"]);
@@ -208,9 +140,8 @@ describe("performSearch", () => {
 		// given
 		vi.stubGlobal("fetch", async (): Promise<Response> => jsonResponse({ results: [] }));
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: true,
-			auto: true,
+			appendProvidersAsFallback: true,
+			enableNative: true,
 			providers: [
 				{ id: "one", provider: "exa", baseUrl: "https://gateway.example.com/one" },
 				{ id: "two", provider: "exa", baseUrl: "https://gateway.example.com/two" },
@@ -218,18 +149,7 @@ describe("performSearch", () => {
 		};
 
 		// when
-		const details = await performSearch(
-			config,
-			{ query: "nothing", maxResults: 2 },
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{
-				useFallback: true,
-				retryOnEmpty: true,
-			},
-		);
+		const details = await performSearch(config, { query: "nothing" }, undefined, undefined, undefined, true);
 
 		// then
 		expect(details.results).toHaveLength(0);
@@ -246,27 +166,15 @@ describe("performSearch", () => {
 			return calls === 1 ? jsonResponse({ results: [] }) : jsonResponse({ error: "down" }, 503);
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: false,
-			auto: true,
+			appendProvidersAsFallback: true,
+			enableNative: true,
 			providers: [
 				{ id: "empty", provider: "exa", baseUrl: "https://gateway.example.com/empty" },
 				{ id: "failed", provider: "exa", baseUrl: "https://gateway.example.com/failed" },
 			],
 		};
 
-		const details = await performSearch(
-			config,
-			{ query: "nothing", maxResults: 2 },
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{
-				useFallback: true,
-				retryOnEmpty: true,
-			},
-		);
+		const details = await performSearch(config, { query: "nothing" }, undefined, undefined, undefined, true);
 
 		expect(details.entryId).toBe("empty");
 		expect(details.results).toEqual([]);
@@ -279,14 +187,13 @@ describe("performSearch", () => {
 		// given
 		vi.stubGlobal("fetch", async (): Promise<Response> => jsonResponse({ results: [] }));
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: false,
-			auto: true,
+			appendProvidersAsFallback: false,
+			enableNative: true,
 			providers: [{ id: "only", provider: "exa", baseUrl: "https://gateway.example.com/only" }],
 		};
 
 		// when
-		const details = await performSearch(config, { query: "nothing", maxResults: 2 });
+		const details = await performSearch(config, { query: "nothing" });
 
 		// then
 		expect(details.results).toHaveLength(0);
@@ -307,27 +214,15 @@ describe("performSearch", () => {
 			return jsonResponse({ results: [{ title: "Fallback", url: "https://fallback.example.com", text: "ok" }] });
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: false,
-			auto: false,
+			appendProvidersAsFallback: true,
+			enableNative: false,
 			providers: [
 				{ id: "direct", provider: "empty-error-direct" },
 				{ id: "fallback", provider: "exa", baseUrl: "https://gateway.example.com/fallback" },
 			],
 		};
 
-		const details = await performSearch(
-			config,
-			{ query: "empty error", maxResults: 1 },
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{
-				useFallback: true,
-				retryOnEmpty: false,
-			},
-		);
+		const details = await performSearch(config, { query: "empty error" });
 
 		expect(requestedUrls).toEqual(["https://gateway.example.com/fallback"]);
 		expect(details.entryId).toBe("fallback");
@@ -336,9 +231,8 @@ describe("performSearch", () => {
 
 	it("#given direct provider ignores abort #when timeout expires #then search returns a timeout failure", async () => {
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: false,
-			auto: false,
+			appendProvidersAsFallback: false,
+			enableNative: false,
 			providers: [{ id: "direct", provider: "never-direct", timeoutMs: 20 }],
 		};
 		const { registerProviderExtension } = await import("../src/websearch/providers.js");
@@ -347,7 +241,7 @@ describe("performSearch", () => {
 			search: async () => new Promise(() => undefined),
 		});
 
-		const details = await performSearch(config, { query: "timeout", maxResults: 1 });
+		const details = await performSearch(config, { query: "timeout" });
 
 		expect(details.error).toContain("timed out after 20ms");
 	});
@@ -368,9 +262,8 @@ describe("performSearch", () => {
 			);
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: true,
-			auto: true,
+			appendProvidersAsFallback: true,
+			enableNative: true,
 			providers: [
 				{ id: "hang", provider: "exa", baseUrl: "https://gateway.example.com/hang", timeoutMs: 50 },
 				{ id: "quick", provider: "exa", baseUrl: "https://gateway.example.com/quick" },
@@ -378,18 +271,7 @@ describe("performSearch", () => {
 		};
 
 		// when
-		const details = await performSearch(
-			config,
-			{ query: "timeout route", maxResults: 1 },
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{
-				useFallback: true,
-				retryOnEmpty: false,
-			},
-		);
+		const details = await performSearch(config, { query: "timeout route" });
 
 		// then
 		expect(requestedUrls).toEqual(["https://gateway.example.com/hang", "https://gateway.example.com/quick"]);
@@ -409,9 +291,8 @@ describe("performSearch", () => {
 			});
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: true,
-			auto: true,
+			appendProvidersAsFallback: true,
+			enableNative: true,
 			providers: [
 				{ id: "one", provider: "exa", baseUrl: "https://gateway.example.com/one" },
 				{ id: "two", provider: "exa", baseUrl: "https://gateway.example.com/two" },
@@ -419,9 +300,9 @@ describe("performSearch", () => {
 		};
 
 		// when / then
-		await expect(
-			performSearch(config, { query: "abort route", maxResults: 1 }, controller.signal),
-		).rejects.toMatchObject({ name: "AbortError" });
+		await expect(performSearch(config, { query: "abort route" }, controller.signal)).rejects.toMatchObject({
+			name: "AbortError",
+		});
 		expect(fetchCalls).toBe(1);
 	});
 
@@ -431,16 +312,15 @@ describe("performSearch", () => {
 			return jsonResponse({ error: { message: "max_tokens must be at least 1024" } }, 400);
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: false,
-			auto: true,
+			appendProvidersAsFallback: false,
+			enableNative: true,
 			providers: [
 				{ id: "primary", provider: "exa", apiKey: "exa-test", baseUrl: "https://gateway.example.com/exa" },
 			],
 		};
 
 		// when
-		const details = await performSearch(config, { query: "test", maxResults: 1 });
+		const details = await performSearch(config, { query: "test" });
 
 		// then
 		expect(details.error).toContain("HTTP 400");
@@ -453,16 +333,15 @@ describe("performSearch", () => {
 			return jsonResponse({ error: "Bad Request" }, 400);
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: false,
-			auto: true,
+			appendProvidersAsFallback: false,
+			enableNative: true,
 			providers: [
 				{ id: "primary", provider: "exa", apiKey: "exa-test", baseUrl: "https://gateway.example.com/exa" },
 			],
 		};
 
 		// when
-		const details = await performSearch(config, { query: "test", maxResults: 1 });
+		const details = await performSearch(config, { query: "test" });
 
 		// then
 		expect(details.error).toContain("HTTP 400");
@@ -475,9 +354,8 @@ describe("performSearch", () => {
 			return new Response("error code: 530", { status: 530, headers: { "Content-Type": "text/plain" } });
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: false,
-			auto: true,
+			appendProvidersAsFallback: false,
+			enableNative: true,
 			providers: [
 				{
 					id: "primary",
@@ -490,7 +368,7 @@ describe("performSearch", () => {
 		};
 
 		// when
-		const details = await performSearch(config, { query: "test", maxResults: 1 });
+		const details = await performSearch(config, { query: "test" });
 
 		// then
 		expect(details.error).toContain("HTTP 530");
@@ -501,16 +379,15 @@ describe("performSearch", () => {
 		// given
 		vi.stubGlobal("fetch", async (): Promise<Response> => new Response("", { status: 502 }));
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: false,
-			auto: true,
+			appendProvidersAsFallback: false,
+			enableNative: true,
 			providers: [
 				{ id: "primary", provider: "exa", apiKey: "exa-test", baseUrl: "https://gateway.example.com/exa" },
 			],
 		};
 
 		// when
-		const details = await performSearch(config, { query: "test", maxResults: 1 });
+		const details = await performSearch(config, { query: "test" });
 
 		// then
 		expect(details.error).toBe("Search failed with HTTP 502");
@@ -523,16 +400,15 @@ describe("performSearch", () => {
 			return jsonResponse({ error: { message: longMessage } }, 400);
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: false,
-			auto: true,
+			appendProvidersAsFallback: false,
+			enableNative: true,
 			providers: [
 				{ id: "primary", provider: "exa", apiKey: "exa-test", baseUrl: "https://gateway.example.com/exa" },
 			],
 		};
 
 		// when
-		const details = await performSearch(config, { query: "test", maxResults: 1 });
+		const details = await performSearch(config, { query: "test" });
 
 		// then
 		expect(details.error).toContain("HTTP 400");
@@ -550,9 +426,8 @@ describe("performSearch", () => {
 			return new Response("origin unreachable", { status: 530, headers: { "Content-Type": "text/plain" } });
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: true,
-			auto: true,
+			appendProvidersAsFallback: true,
+			enableNative: true,
 			providers: [
 				{
 					id: "native",
@@ -571,18 +446,7 @@ describe("performSearch", () => {
 		};
 
 		// when
-		const details = await performSearch(
-			config,
-			{ query: "test", maxResults: 1 },
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{
-				useFallback: true,
-				retryOnEmpty: false,
-			},
-		);
+		const details = await performSearch(config, { query: "test" });
 
 		// then
 		expect(details.error).toContain("anthropic/native");
@@ -604,9 +468,8 @@ describe("performSearch", () => {
 			});
 		});
 		const reorderedConfig: WebsearchConfig = {
-			strategy: "priority",
-			fallback: true,
-			auto: true,
+			appendProvidersAsFallback: true,
+			enableNative: true,
 			providers: [
 				{ id: "low", provider: "exa", baseUrl: "https://gateway.example.com/low", priority: 5 },
 				{ id: "high", provider: "exa", baseUrl: "https://gateway.example.com/high", priority: 0 },
@@ -616,8 +479,7 @@ describe("performSearch", () => {
 		// when
 		await performSearch(
 			reorderedConfig,
-			{ query: "resolved order", maxResults: 1 },
-			undefined,
+			{ query: "resolved order" },
 			undefined,
 			(providerLabel, attempts, routeLabels) => {
 				listenerCalls.push({
@@ -626,8 +488,6 @@ describe("performSearch", () => {
 					routeLabels: [...routeLabels],
 				});
 			},
-			undefined,
-			{ useFallback: true, retryOnEmpty: false },
 		);
 
 		// then
@@ -643,88 +503,63 @@ describe("performSearch", () => {
 		expect(listenerCalls[0]?.routeLabels?.[0]).toBe(listenerCalls[0]?.label);
 		expect(listenerCalls[1]?.routeLabels?.[1]).toBe(listenerCalls[1]?.label);
 	});
-
-	it("#given native success and round-robin configured routes #when searching repeatedly #then unused fallback does not rotate", async () => {
-		const requestedUrls: string[] = [];
+	it("#given providers with and without a result-count parameter #when performSearch fires onAttempt #then reports the effective per-provider max results", async () => {
+		// given
+		const listenerCalls: Array<{ label: string; maxResults: number | undefined }> = [];
 		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
 			const url = String(input);
-			requestedUrls.push(url);
-			if (url.includes("native")) {
-				return jsonResponse({
-					output: [{ type: "web_search_call", action: { sources: [{ url: "https://native.example.com" }] } }],
+			if (url.includes("duckduckgo")) {
+				return new Response('<html><body><div class="result"></div></body></html>', {
+					status: 200,
+					headers: { "Content-Type": "text/html" },
 				});
 			}
-			return jsonResponse({ results: [{ title: "Fallback", url: "https://fallback.example.com", text: "ok" }] });
+			return jsonResponse({ error: "down" }, 503);
 		});
 		const config: WebsearchConfig = {
-			strategy: "round-robin",
-			fallback: false,
-			auto: true,
+			appendProvidersAsFallback: true,
+			enableNative: false,
 			providers: [
-				{ id: "one", provider: "exa", baseUrl: "https://gateway.example.com/one" },
-				{ id: "two", provider: "exa", baseUrl: "https://gateway.example.com/two" },
+				{ id: "capped", provider: "exa", baseUrl: "https://gateway.example.com/exa", maxResults: 30 },
+				{ id: "default", provider: "exa", baseUrl: "https://gateway.example.com/exa2" },
+				{ id: "no-param", provider: "duckduckgo-html" },
 			],
 		};
-		const state = createSearchRoutingState(config.providers.length);
 
-		await performSearch(config, { query: "one", maxResults: 1 }, undefined, state, undefined, nativeRoute(), {
-			useFallback: true,
-			retryOnEmpty: false,
-		});
-		await performSearch(config, { query: "two", maxResults: 1 }, undefined, state);
+		// when
+		await performSearch(
+			config,
+			{ query: "max results" },
+			undefined,
+			(providerLabel, _attempts, _routeLabels, maxResults) => {
+				listenerCalls.push({ label: providerLabel, maxResults });
+			},
+		);
 
-		expect(requestedUrls).toEqual(["https://gateway.example.com/native", "https://gateway.example.com/one"]);
+		// then
+		expect(listenerCalls).toHaveLength(3);
+		// exa caps at 20: configured 30 is clamped to the provider limit
+		expect(listenerCalls[0]).toEqual({ label: "exa/capped", maxResults: 20 });
+		// exa without configuration falls back to the default 10
+		expect(listenerCalls[1]).toEqual({ label: "exa/default", maxResults: 10 });
+		// duckduckgo-html takes no count parameter: no cap is reported
+		expect(listenerCalls[2]).toEqual({ label: "duckduckgo-html/no-param", maxResults: undefined });
 	});
 
-	it("#given native and round-robin configured routes without explicit fallback #when searching repeatedly #then native remains exclusive", async () => {
-		const requestedUrls: string[] = [];
-		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
-			const url = String(input);
-			requestedUrls.push(url);
-			if (url.includes("native")) return jsonResponse({ error: "down" }, 503);
-			return jsonResponse({
-				results: [{ title: "Fallback", url: `https://result.example.com/${requestedUrls.length}`, text: "ok" }],
-			});
-		});
-		const config: WebsearchConfig = {
-			strategy: "round-robin",
-			fallback: true,
-			auto: true,
-			providers: [
-				{ id: "one", provider: "exa", baseUrl: "https://gateway.example.com/one" },
-				{ id: "two", provider: "exa", baseUrl: "https://gateway.example.com/two" },
-			],
-		};
-		const state = createSearchRoutingState(config.providers.length);
-
-		await performSearch(config, { query: "one", maxResults: 1 }, undefined, state, undefined, nativeRoute());
-		await performSearch(config, { query: "two", maxResults: 1 }, undefined, state, undefined, nativeRoute());
-
-		expect(requestedUrls).toEqual(["https://gateway.example.com/native", "https://gateway.example.com/native"]);
-	});
-
-	it("#given a native adapter throws without explicit fallback #when searching #then does not use configured routes", async () => {
+	it("#given a native adapter throws and fallback is disabled #when searching #then does not use configured routes", async () => {
 		const requestedUrls: string[] = [];
 		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
 			requestedUrls.push(String(input));
 			return jsonResponse({ results: [{ title: "Fallback", url: "https://fallback.example", text: "ok" }] });
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: true,
-			auto: true,
+			appendProvidersAsFallback: false,
+			enableNative: true,
 			providers: [{ id: "manual", provider: "exa", baseUrl: "https://gateway.example.com/manual" }],
 		};
 		const brokenNative = { ...nativeRoute(), adapter: "missing-adapter" };
 
-		const details = await performSearch(
-			config,
-			{ query: "adapter fallback", maxResults: 1 },
-			undefined,
-			undefined,
-			undefined,
-			brokenNative,
-		);
+		const details = await performSearch(config, { query: "adapter fallback" }, undefined, undefined, brokenNative);
 
 		expect(requestedUrls).toEqual([]);
 		expect(details.entryId).toBe("native");
@@ -738,23 +573,38 @@ describe("performSearch", () => {
 			return jsonResponse({ error: "down" }, 503);
 		});
 		const config: WebsearchConfig = {
-			strategy: "priority",
-			fallback: false,
-			auto: true,
+			appendProvidersAsFallback: false,
+			enableNative: true,
 			providers: [{ id: "manual", provider: "exa", baseUrl: "https://gateway.example.com/manual" }],
 		};
 
-		const details = await performSearch(
-			config,
-			{ query: "no fallback", maxResults: 1 },
-			undefined,
-			undefined,
-			undefined,
-			nativeRoute(),
-		);
+		const details = await performSearch(config, { query: "no fallback" }, undefined, undefined, nativeRoute());
 
 		expect(requestedUrls).toEqual(["https://gateway.example.com/native"]);
 		expect(details.attempts?.map((attempt) => `${attempt.provider}/${attempt.entryId}`)).toEqual(["openai/native"]);
+	});
+
+	it("#given native failure and fallback enabled #when searching #then the configured chain runs", async () => {
+		const requestedUrls: string[] = [];
+		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
+			const url = String(input);
+			requestedUrls.push(url);
+			if (url.includes("native")) return jsonResponse({ error: "down" }, 503);
+			return jsonResponse({
+				results: [{ title: "Manual", url: "https://manual.example.com", text: "ok" }],
+			});
+		});
+		const config: WebsearchConfig = {
+			appendProvidersAsFallback: true,
+			enableNative: true,
+			providers: [{ id: "manual", provider: "exa", baseUrl: "https://gateway.example.com/manual" }],
+		};
+
+		const details = await performSearch(config, { query: "native walk" }, undefined, undefined, nativeRoute());
+
+		expect(requestedUrls).toEqual(["https://gateway.example.com/native", "https://gateway.example.com/manual"]);
+		expect(details.entryId).toBe("manual");
+		expect(details.attempts?.map((attempt) => attempt.entryId)).toEqual(["native", "manual"]);
 	});
 });
 
@@ -767,10 +617,11 @@ describe("formatSearchText native entry label", () => {
 			results: [{ title: "Native", url: "https://example.com/native", snippet: "snip" }],
 			durationMs: 7,
 			truncated: false,
-			strategy: "priority",
 			attempts: [{ provider: "openai", entryId: "native", durationMs: 7, resultsCount: 1 }],
 		};
 
-		expect(formatSearchText(details)).toContain("via openai/native (priority)");
+		const formatted = formatSearchText(details);
+		expect(formatted).toContain("via openai/native");
+		expect(formatted).not.toContain("(priority)");
 	});
 });

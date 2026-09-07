@@ -225,7 +225,6 @@ export async function resolveNativeEntry(
 		kind: "ready",
 		route: {
 			id,
-			source: "native",
 			provider: model.provider,
 			adapter: mapping.adapter,
 			...(resolvedApiKey ? { apiKey: resolvedApiKey } : {}),

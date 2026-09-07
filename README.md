@@ -11,14 +11,13 @@ The public tool schema matches free-code:
 	"query": "The search query to use",
 	"allowed_domains": ["example.com"],
 	"blocked_domains": ["spam.example.com"],
-	"use_fallback": false,
 	"retry_on_empty": false
 }
 ```
 
 Only `query` is required. `allowed_domains` and `blocked_domains` are mutually exclusive for a single tool call. Result limits are configured per provider, not exposed in the tool schema.
 
-Fallback is explicitly authorized per call. `use_fallback` defaults to `false`; when true, an operational failure advances to the next configured route. A successful empty response is returned immediately and is never labeled as a failure. Set both `use_fallback: true` and `retry_on_empty: true` to continue after an empty response.
+Fallback is configured, not authorized per call. With `appendProvidersAsFallback: true` (the default), an operational failure advances to the next configured route. A successful empty response is returned immediately and is never labeled as a failure. Set `retry_on_empty: true` on a call to continue the chain after an empty response. The config file is validated against a strict schema: unknown keys, wrong value types, and out-of-range numbers are rejected with the offending key path. Legacy keys (`auto`, `strategy`, `weight`, `fallback`, `fallback_chain`, top-level `provider`/`backend`) are rejected the same way, so stale configs fail loudly at startup.
 
 ## Configuration
 
@@ -34,22 +33,25 @@ Example override:
 
 ```json
 {
-	"backend": "perplexity",
-	"apiKey": "pplx-...",
-	"maxResults": 8,
-	"allowedDomains": ["docs.example.com"]
+	"providers": [
+		{
+			"provider": "perplexity",
+			"apiKey": "pplx-...",
+			"maxResults": 8,
+			"allowedDomains": ["docs.example.com"]
+		}
+	]
 }
 ```
 
-Legacy configs that use `"provider"` instead of `"backend"` continue to work.
-
-`fallback_chain` is the ordered set of configured routes considered after native search, or as the primary chain when no native route matches:
+The top-level single-provider shorthand and its `backend` alias are no longer supported; list every provider under `providers`.
+`providers` is the ordered set of configured routes considered after native search, or as the primary chain when no native route matches:
 
 ```json
 {
-	"strategy": "priority",
-	"auto": true,
-	"fallback_chain": [
+	"appendProvidersAsFallback": true,
+	"enableNative": true,
+	"providers": [
 		{
 			"id": "tavily",
 			"provider": "tavily",
@@ -85,11 +87,11 @@ Legacy configs that use `"provider"` instead of `"backend"` continue to work.
 }
 ```
 
-### Native auto-route
+### Native routing
 
-When `auto` is `true` (the default) and the active pi model exposes a server-hosted search tool, the extension resolves one implicit `{ id: "native", ... }` route from `ExtensionContext.model` and its credentials from `ExtensionContext.modelRegistry.getApiKeyAndHeaders`. It never scans other available models and never borrows another provider's credentials. Switching models changes the route on the next tool call without a reload.
+When `enableNative` is `true` (the default) and the active pi model exposes a server-hosted search tool, the extension resolves one implicit `{ id: "native", ... }` route from `ExtensionContext.model` and its credentials from `ExtensionContext.modelRegistry.getApiKeyAndHeaders`. It never scans other available models and never borrows another provider's credentials. Switching models changes the route on the next tool call without a reload.
 
-A matched native route is always attempted first. By default it remains exclusive because `use_fallback` defaults to `false`. A call with `use_fallback: true` may continue through `fallback_chain` after a native authentication, endpoint, adapter, timeout, or request failure. Empty native results stop successfully unless that same call also sets `retry_on_empty: true`. When no native route matches, the first available configured entry is the primary route.
+A matched native route is always attempted first. With `appendProvidersAsFallback: true` (the default), the chain continues through the remaining `providers` after a native authentication, endpoint, adapter, timeout, or request failure. Set `appendProvidersAsFallback: false` to keep the native route (or the highest-priority configured entry) exclusive. Empty native results stop successfully unless the call also sets `retry_on_empty: true`. When no native route matches, configured entries run in `priority` order.
 
 Models that activate native routing (Q1 2026):
 
@@ -107,12 +109,6 @@ Models that activate native routing (Q1 2026):
 
 The native entry inherits `model.baseUrl` from `ExtensionContext.model`, so any local gateway override registered in the pi model registry is honored. Standard endpoints append `/v1/<resource>` when needed; Codex endpoints append `/codex/responses` without inserting `/v1`.
 
-Routing strategies order `fallback_chain`; native search, when present, is prepended to that order:
-
-- `priority`: try configured providers by ascending `priority`.
-- `round-robin`: rotate configured providers.
-- `fill-first`: collect unique results from configured providers until the limit is filled.
-
 ### Progress rendering
 
 While a search is in flight, the TUI shows a single collapsed line for the provider currently being tried — no step counter, just the active source:
@@ -128,7 +124,7 @@ Searching "q" via duckduckgo-html/backup (max 10)
 route exa/primary:failed -> duckduckgo-html/backup:searching -> brave/extra:pending
 ```
 
-The active native route renders as `<active-provider>/native`, while configured routes render as `provider/id`. The finished render keeps the same spelling, e.g. `5 results via duckduckgo-html/backup (priority) in 320ms`, plus a `route ...` line of completed attempt states when expanded.
+The active native route renders as `<active-provider>/native`, while configured routes render as `provider/id`. The finished render keeps the same spelling, e.g. `5 results via duckduckgo-html/backup in 320ms`, plus a `route ...` line of completed attempt states when expanded.
 
 An optional entry can use `"optional": true`. If its provider plugin is not installed or its required API key is absent, the entry is omitted instead of invalidating the whole config. This is useful for machine-specific MCP or command bridges before a final `duckduckgo-html` entry.
 
@@ -152,9 +148,9 @@ Supported providers:
 - `minimax-cn` / `minimax`: MiniMax web search (CN and global hosts). Dispatches by API key prefix: `sk-cp-…` posts to the bundled `/v1/coding_plan/search` REST endpoint (Token Plan bundled quota); any other key (typically `sk-api-…` for pay-as-you-go) hits the Anthropic-compatible `/anthropic/v1/messages` endpoint with the `web_search_20250305` server tool. Requires `apiKey`. The default baseUrl is `https://api.minimaxi.com/anthropic/v1/messages` for `minimax-cn` and `https://api.minimax.io/anthropic/v1/messages` for `minimax`; only the origin is used to pick the regional host.
 - `deepseek`: DeepSeek's Anthropic-compatible endpoint with the server-side `web_search_20260209` tool. The key is resolved automatically from the active DeepSeek model, so no config entry is required.
 
-Provider-specific optional fields include `id`, `baseUrl`, `headers`, `model`, `maxResults`, `priority`, `weight`, `searchContextSize`, `codexMode`, `allowedDomains`, `blockedDomains`, and `userLocation` where supported. `baseUrl` is supported for every provider and must be a public HTTPS URL without embedded credentials; self-hosted providers (`searxng`) may use plain HTTP and private hosts instead. `headers` is a string map merged into every request of that entry — use it for reverse-proxy authentication in front of self-hosted instances; it is stored in plaintext like `apiKey`.
+Provider-specific optional fields include `id`, `baseUrl`, `headers`, `model`, `maxResults`, `priority`, `searchContextSize`, `codexMode`, `allowedDomains`, `blockedDomains`, and `userLocation` where supported. `maxResults` (integer 1-50, default 10) caps results per entry: providers with a count parameter pass it upstream and clamp to their own API limit, others slice results locally; attempt progress reports the effective cap only for providers that take one. `baseUrl` is supported for every provider and must be a public HTTPS URL without embedded credentials; self-hosted providers (`searxng`) may use plain HTTP and private hosts instead. `headers` is a string map merged into every request of that entry — use it for reverse-proxy authentication in front of self-hosted instances; it is stored in plaintext like `apiKey`.
 
-Tool text and TUI output include the selected provider entry, routing strategy, and fallback attempts so the agent can see which provider produced the result.
+Tool text and TUI output include the selected provider entry and fallback attempts so the agent can see which provider produced the result.
 
 ### Scriptable provider extensions
 

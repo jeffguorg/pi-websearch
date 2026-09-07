@@ -4,6 +4,7 @@ import type { BuildContext, ProviderModule } from "./shared.js";
 import { clamp, collect, contentHeaders, getArray, getNumber, getObject, getString, result } from "./shared.js";
 
 export const tavilyProvider: ProviderModule = {
+	maxResultsLimit: 20,
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		const body: JsonObject = { query: request.query, max_results: clamp(maxResults, 1, 20) };
 		if (allowedDomains) body["include_domains"] = allowedDomains;

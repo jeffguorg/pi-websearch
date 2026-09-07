@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { loadWebsearchConfig } from "./websearch/config.js";
 import { loadExternalProviderExtensions } from "./websearch/providers.js";
-import { providerEntryLabel } from "./websearch/search.js";
+import { providerEntryLabel, sortedProviders } from "./websearch/search.js";
 import { createWebSearchTool } from "./websearch/tool.js";
 import type { ConfigLoadResult, WebsearchConfig } from "./websearch/types.js";
 
@@ -27,7 +27,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	};
 
 	function providerList(config: WebsearchConfig): string {
-		return config.providers.map(providerEntryLabel).join(", ");
+		return sortedProviders(config.providers).map(providerEntryLabel).join(", ");
 	}
 
 	function clearUi(ctx: ExtensionContext): void {
@@ -67,7 +67,7 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			}
 			if (state.ok) {
 				ctx.ui.notify(
-					`Web search active: strategy=${state.config.strategy}, auto=${state.config.auto ? "enabled" : "disabled"}, providers=${providerList(state.config)}`,
+					`Web search active: fallback=${state.config.appendProvidersAsFallback ? "on" : "off"}, native=${state.config.enableNative ? "enabled" : "disabled"}, providers=${providerList(state.config)}`,
 					"info",
 				);
 				return;

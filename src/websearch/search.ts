@@ -1,15 +1,15 @@
+import { DEFAULT_MAX_RESULTS } from "./providers/shared.js";
 import {
 	buildSearchRequest,
 	executeDirectProviderSearch,
 	normalizeSearchResponse,
 	parseSearchResponseBody,
+	providerMaxResultsLimit,
 } from "./providers.js";
 import type {
 	JsonObject,
-	RoutingStrategy,
 	SearchAttempt,
 	SearchDetails,
-	SearchExecutionPolicy,
 	SearchProviderEntry,
 	SearchRequest,
 	SearchRoute,
@@ -93,15 +93,6 @@ async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promi
 	});
 }
 
-export interface SearchRoutingState {
-	roundRobinCursor: number;
-	successCounts: number[];
-}
-
-export function createSearchRoutingState(providerCount: number): SearchRoutingState {
-	return { roundRobinCursor: 0, successCounts: Array.from({ length: providerCount }, () => 0) };
-}
-
 export function providerEntryLabel(entry: {
 	readonly provider: string;
 	readonly id?: string;
@@ -112,58 +103,11 @@ export function providerEntryLabel(entry: {
 	return `${entry.provider}/${id}`;
 }
 
-function sortedPriorityIndices(providers: SearchProviderEntry[]): number[] {
+export function sortedProviders(providers: SearchProviderEntry[]): SearchProviderEntry[] {
 	return providers
-		.map((provider, index) => ({ index, priority: provider.priority ?? index }))
+		.map((provider, index) => ({ provider, index, priority: provider.priority ?? index }))
 		.sort((left, right) => left.priority - right.priority || left.index - right.index)
-		.map((item) => item.index);
-}
-
-function weightedIndices(providers: SearchProviderEntry[]): number[] {
-	const indices: number[] = [];
-	for (const [index, provider] of providers.entries()) {
-		const weight = Math.max(1, Math.trunc(provider.weight ?? 1));
-		for (let count = 0; count < weight; count += 1) indices.push(index);
-	}
-	return indices.length > 0 ? indices : providers.map((_provider, index) => index);
-}
-
-function rotateUnique(indices: number[], start: number, providerCount: number): number[] {
-	const order: number[] = [];
-	for (let offset = 0; offset < indices.length; offset += 1) {
-		const index = indices[(start + offset) % indices.length];
-		if (index !== undefined && !order.includes(index)) order.push(index);
-	}
-	for (let index = 0; index < providerCount; index += 1) {
-		if (!order.includes(index)) order.push(index);
-	}
-	return order;
-}
-
-function selectOrder(
-	strategy: RoutingStrategy,
-	providers: SearchProviderEntry[],
-	state: SearchRoutingState,
-	advanceRoundRobin = true,
-): number[] {
-	if (strategy === "priority") return sortedPriorityIndices(providers);
-	if (strategy === "round-robin") {
-		const indices = weightedIndices(providers);
-		const order = rotateUnique(indices, state.roundRobinCursor % indices.length, providers.length);
-		if (advanceRoundRobin) state.roundRobinCursor = (state.roundRobinCursor + 1) % indices.length;
-		return order;
-	}
-
-	let selected = 0;
-	let selectedCount = state.successCounts[0] ?? 0;
-	for (let index = 1; index < providers.length; index += 1) {
-		const count = state.successCounts[index] ?? 0;
-		if (count < selectedCount) {
-			selected = index;
-			selectedCount = count;
-		}
-	}
-	return [selected, ...providers.map((_provider, index) => index).filter((index) => index !== selected)];
+		.map((item) => item.provider);
 }
 
 function failedProviderDetails(
@@ -198,13 +142,14 @@ async function performProviderSearch(
 			directAbort.signal,
 		);
 		if (directResults) {
-			const limitedResults = directResults.slice(0, request.maxResults);
+			const max = config.maxResults ?? DEFAULT_MAX_RESULTS;
+			const limitedResults = directResults.slice(0, max);
 			const details: SearchDetails = {
 				provider: config.provider,
 				query: request.query,
 				results: limitedResults,
 				durationMs: Date.now() - startedAt,
-				truncated: directResults.length > request.maxResults,
+				truncated: directResults.length > max,
 			};
 			if (config.id !== undefined) details.entryId = config.id;
 			return details;
@@ -305,7 +250,7 @@ async function performProviderSearch(
 	} catch (error) {
 		return failedProviderDetails(config, request, startedAt, error);
 	}
-	const max = request.maxResults;
+	const max = config.maxResults ?? DEFAULT_MAX_RESULTS;
 	const limitedResults = results.slice(0, max);
 	const details: SearchDetails = {
 		provider: config.provider,
@@ -333,116 +278,80 @@ export type SearchAttemptListener = (
 	providerLabel: string,
 	attempts: readonly SearchAttempt[],
 	routeLabels: readonly string[],
+	maxResults?: number,
 ) => void;
+
+/** Effective per-route result cap the current provider honours, undefined when
+ * the provider takes no result-count parameter. */
+function effectiveMaxResults(provider: SearchProviderEntry | SearchRoute): number | undefined {
+	const adapter = "adapter" in provider ? provider.adapter : provider.provider;
+	const limit = providerMaxResultsLimit(adapter);
+	if (limit === undefined) return undefined;
+	return Math.min(provider.maxResults ?? DEFAULT_MAX_RESULTS, limit);
+}
+
+export function resolveRoutes(
+	config: WebsearchConfig,
+	nativeRoute?: SearchRoute,
+): Array<SearchProviderEntry | SearchRoute> {
+	return [...(nativeRoute ? [nativeRoute] : []), ...sortedProviders(config.providers)];
+}
 
 export async function performSearch(
 	config: WebsearchConfig,
 	request: SearchRequest,
 	signal?: AbortSignal,
-	routingState?: SearchRoutingState,
 	onAttempt?: SearchAttemptListener,
 	nativeRoute?: SearchRoute,
-	policy: SearchExecutionPolicy = { useFallback: false, retryOnEmpty: false },
+	retryOnEmpty = false,
 ): Promise<SearchDetails> {
 	const startedAt = Date.now();
-	const state = routingState ?? createSearchRoutingState(config.providers.length);
-	const configuredOrder = selectOrder(config.strategy, config.providers, state, false);
-	const configuredRoutes = configuredOrder.flatMap((index) => {
-		const provider = config.providers[index];
-		return provider ? [{ provider, configuredIndex: index }] : [];
-	});
-	const allRoutes: Array<{
-		provider: SearchProviderEntry | SearchRoute;
-		configuredIndex?: number;
-	}> = [...(nativeRoute ? [{ provider: nativeRoute }] : []), ...configuredRoutes];
-	const routes = policy.useFallback ? allRoutes : allRoutes.slice(0, 1);
+	const allRoutes = resolveRoutes(config, nativeRoute);
+	const routes = config.appendProvidersAsFallback ? allRoutes : allRoutes.slice(0, 1);
+	if (routes.length === 0) {
+		return {
+			provider: nativeRoute?.provider ?? config.providers[0]?.provider ?? "unknown",
+			query: request.query,
+			results: [],
+			durationMs: Date.now() - startedAt,
+			truncated: false,
+			attempts: [],
+			error: "All search providers failed.",
+		};
+	}
 	const attempts: SearchAttempt[] = [];
-	let configuredAttemptStarted = false;
-	const routeLabels = routes.map(({ provider }) => providerEntryLabel(provider));
-	const collected = new Map<string, SearchDetails["results"][number]>();
+	const routeLabels = onAttempt ? routes.map((route) => providerEntryLabel(route)) : [];
 	let selectedDetails: SearchDetails | undefined;
-	let selectedSuccessfulDetails: SearchDetails | undefined;
 	let lastEmptySuccess: SearchDetails | undefined;
-	const successfulRoutes: SearchDetails[] = [];
 
-	for (const route of routes) {
-		const { provider, configuredIndex } = route;
-		if (configuredIndex !== undefined && !configuredAttemptStarted) {
-			configuredAttemptStarted = true;
-			if (config.strategy === "round-robin") {
-				const weighted = weightedIndices(config.providers);
-				state.roundRobinCursor = (state.roundRobinCursor + 1) % weighted.length;
-			}
-		}
-		onAttempt?.(providerEntryLabel(provider), attempts, routeLabels);
+	for (const [index, provider] of routes.entries()) {
+		onAttempt?.(
+			routeLabels[index] ?? providerEntryLabel(provider),
+			attempts,
+			routeLabels,
+			effectiveMaxResults(provider),
+		);
 		const details = await performProviderSearch(provider, request, signal);
 		attempts.push(attemptFromDetails(details));
 
 		if (details.error !== undefined) {
 			selectedDetails = details;
-			if (!policy.useFallback) {
-				if (config.strategy === "fill-first" && collected.size > 0) break;
-				return { ...details, strategy: config.strategy, attempts };
-			}
+			if (!config.appendProvidersAsFallback) return { ...details, attempts };
 			continue;
 		}
 
-		if (configuredIndex !== undefined) {
-			state.successCounts[configuredIndex] = (state.successCounts[configuredIndex] ?? 0) + 1;
+		if (details.results.length === 0) {
+			lastEmptySuccess = details;
+			if (!retryOnEmpty) return { ...details, attempts };
+			continue;
 		}
-
-		const isEmpty = details.results.length === 0;
-		if (isEmpty) lastEmptySuccess = details;
-		if (isEmpty && (!policy.useFallback || !policy.retryOnEmpty)) {
-			if (collected.size > 0) break;
-			return { ...details, strategy: config.strategy, attempts };
-		}
-		if (config.strategy !== "fill-first" && !isEmpty) {
-			return { ...details, strategy: config.strategy, attempts };
-		}
-
-		selectedDetails = details;
-		selectedSuccessfulDetails = details;
-		successfulRoutes.push(details);
-		for (const item of details.results) {
-			if (collected.size >= request.maxResults) break;
-			if (!collected.has(item.url)) {
-				collected.set(item.url, { ...item, route: providerEntryLabel(details) });
-			}
-		}
-		if (collected.size >= request.maxResults) break;
-	}
-
-	if (collected.size > 0 && selectedSuccessfulDetails) {
-		const results = [...collected.values()];
-		const soleSuccessfulRoute = successfulRoutes.length === 1 ? successfulRoutes[0] : undefined;
-		const details: SearchDetails = {
-			provider: soleSuccessfulRoute?.provider ?? "multiple",
-			query: request.query,
-			results,
-			durationMs: Date.now() - startedAt,
-			truncated: results.length >= request.maxResults,
-			strategy: config.strategy,
-			attempts,
-		};
-		if (soleSuccessfulRoute?.entryId !== undefined) details.entryId = soleSuccessfulRoute.entryId;
-		return details;
+		return { ...details, attempts };
 	}
 
 	if (lastEmptySuccess) {
 		return {
 			...lastEmptySuccess,
 			durationMs: Date.now() - startedAt,
-			strategy: config.strategy,
-			attempts,
-		};
-	}
-
-	if (selectedDetails && !selectedDetails.error) {
-		return {
-			...selectedDetails,
-			durationMs: Date.now() - startedAt,
-			strategy: config.strategy,
 			attempts,
 		};
 	}
@@ -451,14 +360,11 @@ export async function performSearch(
 		provider: nativeRoute?.provider ?? config.providers[0]?.provider ?? "unknown",
 		query: request.query,
 		results: [],
-		durationMs: Date.now() - startedAt,
 		truncated: false,
-		error: "All search providers failed.",
 	};
 	return {
 		...failed,
 		durationMs: Date.now() - startedAt,
-		strategy: config.strategy,
 		attempts,
 		error: `All search providers failed: ${attempts.map((attempt) => `${providerEntryLabel(attempt)} ${attempt.error ?? "failed"}`).join("; ")}`,
 	};
@@ -468,9 +374,7 @@ export function formatSearchText(details: SearchDetails): string {
 	if (details.error) return details.error;
 	if (details.results.length === 0) return `No web search results found for "${details.query}".`;
 
-	const route = details.strategy
-		? ` via ${providerEntryLabel(details)} (${details.strategy})`
-		: ` via ${details.provider}`;
+	const route = ` via ${providerEntryLabel(details)}`;
 	const lines = [`Web search results for "${details.query}"${route}:`, ""];
 	if (details.attempts && details.attempts.length > 0) {
 		lines.push(

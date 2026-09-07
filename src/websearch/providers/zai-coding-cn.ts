@@ -20,7 +20,7 @@ function parseToolPayload(text: string): JsonValue[] {
 
 /** Native routes resolve baseUrl from the model's chat endpoint, which is not
  *  the MCP endpoint. Trust config.baseUrl only when it explicitly targets the
- *  MCP server path (manual fallback_chain entries, api.z.ai global host). */
+ *  MCP server path (manual providers entries, api.z.ai global host). */
 function resolveBaseUrl(configured: string | undefined): string {
 	return configured?.includes("/api/mcp/") ? configured : DEFAULT_BASE_URL;
 }

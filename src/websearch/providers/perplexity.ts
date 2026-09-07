@@ -22,6 +22,7 @@ function normalizeResultList(items: JsonValue[]): SearchResultItem[] {
 }
 
 export const perplexityProvider: ProviderModule = {
+	maxResultsLimit: 20,
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		if (config.model) {
 			const body: JsonObject = {

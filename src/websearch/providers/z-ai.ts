@@ -13,6 +13,7 @@ import {
 } from "./shared.js";
 
 export const zAiProvider: ProviderModule = {
+	maxResultsLimit: 50,
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		if (config.model) {
 			const webSearch: JsonObject = {

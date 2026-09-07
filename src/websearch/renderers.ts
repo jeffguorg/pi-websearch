@@ -12,7 +12,6 @@ interface SearchArgs {
 	query: string;
 	allowed_domains?: string[];
 	blocked_domains?: string[];
-	use_fallback?: boolean;
 	retry_on_empty?: boolean;
 }
 
@@ -80,20 +79,18 @@ export function renderSearchResult(
 		const details = result.details;
 		if (isSearchProgressDetails(details)) {
 			if (details.currentProvider) {
+				const suffix = details.maxResults === undefined ? "" : ` (max ${details.maxResults})`;
 				const line = theme.fg(
 					"warning",
-					`Searching "${shorten(details.query, 80)}" via ${details.currentProvider} (max ${details.maxResults})`,
+					`Searching "${shorten(details.query, 80)}" via ${details.currentProvider}${suffix}`,
 				);
 				const route = routeStateLabel(details);
 				const rows = options.expanded && route ? [line, theme.fg("muted", `route ${route}`)] : [line];
 				return new Text(rows.join("\n"), 0, 0);
 			}
+			const suffix = details.maxResults === undefined ? "" : ` (max ${details.maxResults})`;
 			const route = details.providerLabels.length > 0 ? details.providerLabels.join(" -> ") : "configured providers";
-			return new Text(
-				theme.fg("warning", `Searching "${shorten(details.query, 80)}" via ${route} (max ${details.maxResults})`),
-				0,
-				0,
-			);
+			return new Text(theme.fg("warning", `Searching "${shorten(details.query, 80)}" via ${route}${suffix}`), 0, 0);
 		}
 		return new Text(theme.fg("warning", result.content[0]?.text ?? "Searching the web..."), 0, 0);
 	}
@@ -102,22 +99,25 @@ export function renderSearchResult(
 	if (!details) return new Text(theme.fg("muted", result.content[0]?.text ?? ""), 0, 0);
 	if (isSearchProgressDetails(details)) return new Text(theme.fg("muted", result.content[0]?.text ?? ""), 0, 0);
 	if (isSearchErrorDetails(details)) return new Text(theme.fg("error", details.error), 0, 0);
-	if (details.error) return new Text(theme.fg("error", details.error), 0, 0);
+	if (details.error) {
+		const warnings = options.expanded ? (details.warnings ?? []).map((warning) => theme.fg("warning", warning)) : [];
+		return new Text([theme.fg("error", details.error), ...warnings].join("\n"), 0, 0);
+	}
 
 	const count = details.results.length;
 	const provider = providerEntryLabel(details);
 	const summary =
 		theme.fg("success", `${count} result${count === 1 ? "" : "s"}`) +
-		theme.fg(
-			"muted",
-			` via ${provider}${details.strategy ? ` (${details.strategy})` : ""} in ${durationText(details.durationMs)}`,
-		) +
+		theme.fg("muted", ` via ${provider} in ${durationText(details.durationMs)}`) +
 		(details.truncated ? theme.fg("warning", " (truncated)") : "");
-
-	if (count === 0) return new Text(summary, 0, 0);
+	const warnings = options.expanded ? (details.warnings ?? []).map((warning) => theme.fg("warning", warning)) : [];
+	if (count === 0) {
+		return new Text([summary, ...warnings].join("\n"), 0, 0);
+	}
 
 	const attempts = attemptLabel(details);
-	const rows = options.expanded && attempts ? [summary, theme.fg("muted", `route ${attempts}`)] : [summary];
+	const rows =
+		options.expanded && attempts ? [summary, theme.fg("muted", `route ${attempts}`), ...warnings] : [summary];
 	const visibleLimit = options.expanded ? 8 : 3;
 	for (const item of details.results.slice(0, visibleLimit)) {
 		rows.push(`${theme.fg("accent", shorten(item.title, 80))} ${theme.fg("dim", shorten(item.url, 100))}`);

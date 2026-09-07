@@ -13,6 +13,7 @@ import {
 } from "./shared.js";
 
 export const kimiProvider: ProviderModule = {
+	maxResultsLimit: 20,
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		return {
 			url: providerUrl(config),

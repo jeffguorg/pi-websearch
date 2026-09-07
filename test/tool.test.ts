@@ -13,7 +13,7 @@ function jsonResponse(payload: object, status = 200): Response {
 	return new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json" } });
 }
 
-function config(auto: boolean, maxResults?: number): WebsearchConfig {
+function config(enableNative: boolean, maxResults?: number, appendProvidersAsFallback = true): WebsearchConfig {
 	const provider: SearchProviderEntry = {
 		id: "manual",
 		provider: "exa",
@@ -21,9 +21,8 @@ function config(auto: boolean, maxResults?: number): WebsearchConfig {
 		baseUrl: "https://gateway.example.com/exa",
 	};
 	return {
-		strategy: "priority",
-		fallback: true,
-		auto,
+		appendProvidersAsFallback,
+		enableNative,
 		providers: [maxResults === undefined ? provider : { ...provider, maxResults }],
 	};
 }
@@ -57,7 +56,6 @@ type NativeExecutable = {
 			query: string;
 			allowed_domains?: string[];
 			blocked_domains?: string[];
-			use_fallback?: boolean;
 			retry_on_empty?: boolean;
 		},
 		signal: AbortSignal | undefined,
@@ -91,13 +89,13 @@ describe("web_search tool definition", () => {
 		expect(parameters.properties).toHaveProperty("query");
 		expect(parameters.properties).toHaveProperty("allowed_domains");
 		expect(parameters.properties).toHaveProperty("blocked_domains");
-		expect(parameters.properties).toHaveProperty("use_fallback");
 		expect(parameters.properties).toHaveProperty("retry_on_empty");
+		expect(parameters.properties).not.toHaveProperty("use_fallback");
 		expect(parameters.properties).not.toHaveProperty("maxResults");
 		expect(parameters.additionalProperties).toBe(false);
 	});
 
-	it("#given auto enabled and matching active model #when executing #then prepends native provider", async () => {
+	it("#given native enabled and matching active model #when executing #then prepends native provider", async () => {
 		// given
 		const requestedUrls: string[] = [];
 		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
@@ -133,7 +131,7 @@ describe("web_search tool definition", () => {
 		expect(details.attempts?.map((attempt) => attempt.entryId)).toEqual(["native"]);
 	});
 
-	it("#given native failure and explicit fallback #when executing #then continues to the configured chain", async () => {
+	it("#given native failure and fallback enabled #when executing #then continues to the configured chain", async () => {
 		const requestedUrls: string[] = [];
 		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
 			const url = String(input);
@@ -149,7 +147,7 @@ describe("web_search tool definition", () => {
 
 		const result = await tool.execute(
 			"tool-call",
-			{ query: "explicit fallback", use_fallback: true },
+			{ query: "explicit fallback" },
 			undefined,
 			undefined,
 			context({ provider: "openai", id: "gpt-5.5", baseUrl: "https://gateway.example.com/v1" }),
@@ -177,7 +175,7 @@ describe("web_search tool definition", () => {
 
 		const result = await tool.execute(
 			"tool-call",
-			{ query: "empty fallback", use_fallback: true, retry_on_empty: true },
+			{ query: "empty fallback", retry_on_empty: true },
 			undefined,
 			undefined,
 			context({ provider: "openai", id: "gpt-5.5", baseUrl: "https://gateway.example.com/v1" }),
@@ -190,7 +188,7 @@ describe("web_search tool definition", () => {
 		expect(details.attempts?.[0]?.error).toBeUndefined();
 	});
 
-	it("#given native auth resolution failure and explicit fallback #when executing #then starts the configured chain", async () => {
+	it("#given native auth resolution failure and fallback enabled #when executing #then starts the configured chain", async () => {
 		const requestedUrls: string[] = [];
 		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
 			requestedUrls.push(String(input));
@@ -204,19 +202,17 @@ describe("web_search tool definition", () => {
 		const ctx = context({ provider: "openai", id: "gpt-5.5", baseUrl: "https://gateway.example.com/v1" });
 		ctx.modelRegistry.getApiKeyAndHeaders = async () => ({ ok: false, error: "not logged in" });
 
-		const result = await tool.execute(
-			"tool-call",
-			{ query: "auth fallback", use_fallback: true },
-			undefined,
-			undefined,
-			ctx,
-		);
+		const result = await tool.execute("tool-call", { query: "auth fallback" }, undefined, undefined, ctx);
 
 		expect(requestedUrls).toEqual(["https://gateway.example.com/exa"]);
 		expect((result.details as SearchDetails).entryId).toBe("manual");
+		expect((result.details as SearchDetails).attempts?.map((attempt) => attempt.entryId)).toEqual(["manual"]);
+		expect(result.content.map((part) => (part.type === "text" ? part.text : "")).join("")).not.toContain(
+			"not logged in",
+		);
 	});
 
-	it("#given native auth lookup throws and explicit fallback #when executing #then starts the configured chain", async () => {
+	it("#given native auth lookup throws and fallback enabled #when executing #then starts the configured chain", async () => {
 		const requestedUrls: string[] = [];
 		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
 			requestedUrls.push(String(input));
@@ -232,16 +228,34 @@ describe("web_search tool definition", () => {
 			throw new Error("credential store unavailable");
 		};
 
-		const result = await tool.execute(
-			"tool-call",
-			{ query: "thrown auth fallback", use_fallback: true },
-			undefined,
-			undefined,
-			ctx,
-		);
+		const result = await tool.execute("tool-call", { query: "thrown auth fallback" }, undefined, undefined, ctx);
 
 		expect(requestedUrls).toEqual(["https://gateway.example.com/exa"]);
 		expect((result.details as SearchDetails).entryId).toBe("manual");
+		expect((result.details as SearchDetails).attempts?.map((attempt) => attempt.entryId)).toEqual(["manual"]);
+	});
+
+	it("#given native auth failure and fallback disabled #when executing #then returns the native error", async () => {
+		const requestedUrls: string[] = [];
+		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
+			requestedUrls.push(String(input));
+			return jsonResponse({
+				results: [{ title: "Fallback", url: "https://fallback.example.com", text: "fallback" }],
+			});
+		});
+		const tool = withNativeExecutionContext(
+			createWebSearchTool(() => ({ ok: true, config: config(true, undefined, false), source: "test" })),
+		);
+		const ctx = context({ provider: "openai", id: "gpt-5.5", baseUrl: "https://gateway.example.com/v1" });
+		ctx.modelRegistry.getApiKeyAndHeaders = async () => ({ ok: false, error: "not logged in" });
+
+		const result = await tool.execute("tool-call", { query: "exclusive native" }, undefined, undefined, ctx);
+
+		expect(requestedUrls).toEqual([]);
+		expect(result.content.map((part) => (part.type === "text" ? part.text : "")).join("")).toContain(
+			"Native search authentication could not be resolved",
+		);
+		expect(result.details).toMatchObject({ phase: "error", query: "exclusive native" });
 	});
 
 	it("#given active OpenAI Codex model #when executing #then uses only the Codex SSE endpoint", async () => {
@@ -289,7 +303,7 @@ describe("web_search tool definition", () => {
 		expect(details.results).toEqual([{ title: "https://codex.example.com", url: "https://codex.example.com" }]);
 	});
 
-	it("#given native route and configured max results #when executing #then preserves configured limit", async () => {
+	it("#given native route and configured provider max results #when executing #then native results are not clipped by provider limits", async () => {
 		// given
 		vi.stubGlobal("fetch", async (): Promise<Response> => {
 			return jsonResponse({
@@ -323,10 +337,14 @@ describe("web_search tool definition", () => {
 		// then
 		const details = result.details as SearchDetails;
 		expect(details.entryId).toBe("native");
-		expect(details.results.map((item) => item.url)).toEqual(["https://one.example.com", "https://two.example.com"]);
+		expect(details.results.map((item) => item.url)).toEqual([
+			"https://one.example.com",
+			"https://two.example.com",
+			"https://three.example.com",
+		]);
 	});
 
-	it("#given auto disabled and matching active model #when executing #then does not prepend native provider", async () => {
+	it("#given native disabled and matching active model #when executing #then does not prepend native provider", async () => {
 		// given
 		const requestedUrls: string[] = [];
 		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {
@@ -377,16 +395,15 @@ describe("web_search tool definition", () => {
 		const details = result.details as SearchDetails;
 		expect(details.provider).toBe("exa");
 		expect(updates[0]).toMatchObject({
-			content: [{ type: "text", text: 'Searching "route progress" via exa/manual (max 4)' }],
+			content: [{ type: "text", text: 'Searching "route progress" via exa/manual' }],
 			details: {
 				phase: "searching",
 				query: "route progress",
 				providerLabels: ["exa/manual"],
-				maxResults: 4,
 			},
 		});
 		const progressUpdate = updates.find((u) => (u.details as SearchProgressDetails | undefined)?.currentProvider);
-		expect(progressUpdate?.details).toMatchObject({ currentProvider: "exa/manual" });
+		expect(progressUpdate?.details).toMatchObject({ currentProvider: "exa/manual", maxResults: 4 });
 		for (const update of updates) {
 			for (const entry of update.content) {
 				expect(entry.text ?? "").not.toMatch(/\[\d+\/\d+\]/);
@@ -414,9 +431,73 @@ describe("web_search tool definition", () => {
 		);
 
 		const first = updates[0]?.details as SearchProgressDetails | undefined;
-		expect(first?.providerLabels).toEqual(["kimi-coding/native"]);
+		expect(first?.providerLabels).toEqual(["kimi-coding/native", "exa/manual"]);
 		const progress = updates.find((u) => (u.details as SearchProgressDetails | undefined)?.currentProvider);
 		expect(progress?.details).toMatchObject({ currentProvider: "kimi-coding/native" });
+	});
+
+	it("#given fallback disabled and native route #when emitting progress #then advertises only the first route", async () => {
+		const updates: Array<{ content: Array<{ type: string; text?: string }>; details?: unknown }> = [];
+		vi.stubGlobal(
+			"fetch",
+			async (): Promise<Response> =>
+				jsonResponse({ search_results: [{ title: "Kimi", url: "https://kimi.example.com", summary: "result" }] }),
+		);
+		const tool = withNativeExecutionContext(
+			createWebSearchTool(() => ({ ok: true, config: config(true, undefined, false), source: "test" })),
+		);
+
+		await tool.execute(
+			"tool-call",
+			{ query: "exclusive progress" },
+			undefined,
+			(update) => updates.push(update),
+			context({ provider: "kimi-coding", id: "k3", baseUrl: "https://api.kimi.com/coding" }),
+		);
+
+		const first = updates[0]?.details as SearchProgressDetails | undefined;
+		expect(first?.providerLabels).toEqual(["kimi-coding/native"]);
+		expect(updates[0]?.content[0]?.text).toBe('Searching "exclusive progress" via kimi-coding/native');
+	});
+
+	it("#given fallback disabled and no native route #when emitting progress #then advertises only the first configured provider", async () => {
+		const updates: Array<{ content: Array<{ type: string; text?: string }>; details?: unknown }> = [];
+		vi.stubGlobal(
+			"fetch",
+			async (): Promise<Response> =>
+				jsonResponse({ results: [{ title: "Exa", url: "https://exa.example.com", text: "result" }] }),
+		);
+		const tool = withNativeExecutionContext(
+			createWebSearchTool(() => ({
+				ok: true,
+				source: "test",
+				config: {
+					appendProvidersAsFallback: false,
+					enableNative: false,
+					providers: [
+						{
+							id: "second",
+							provider: "exa",
+							apiKey: "exa-test",
+							baseUrl: "https://gateway.example.com/exa",
+							priority: 10,
+						},
+						{ id: "first", provider: "exa", apiKey: "exa-test", baseUrl: "https://gateway.example.com/exa" },
+					],
+				},
+			})),
+		);
+
+		await tool.execute(
+			"tool-call",
+			{ query: "exclusive chain" },
+			undefined,
+			(update) => updates.push(update),
+			context({ provider: "openai", id: "gpt-5.5", baseUrl: "https://gateway.example.com/v1" }),
+		);
+
+		const first = updates[0]?.details as SearchProgressDetails | undefined;
+		expect(first?.providerLabels).toEqual(["exa/first"]);
 	});
 
 	it("#given invalid domain filters #when executing #then returns error details without spoofing a provider", async () => {
@@ -551,7 +632,7 @@ describe("web_search tool definition", () => {
 		expect((second.details as SearchDetails).provider).toBe("anthropic");
 	});
 
-	it("#given auto enabled and unsupported active model #when executing #then does not prepend native provider", async () => {
+	it("#given native enabled and unsupported active model #when executing #then does not prepend native provider", async () => {
 		// given
 		const requestedUrls: string[] = [];
 		vi.stubGlobal("fetch", async (input: string | URL | Request): Promise<Response> => {

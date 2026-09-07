@@ -3,20 +3,8 @@ import { Type } from "typebox";
 
 import { type NativeModelInfo, type NativeModelRegistry, resolveNativeEntry } from "./native.js";
 import { renderSearchCall, renderSearchResult } from "./renderers.js";
-import {
-	createSearchRoutingState,
-	formatSearchText,
-	performSearch,
-	providerEntryLabel,
-	type SearchRoutingState,
-} from "./search.js";
-import type {
-	ConfigLoadResult,
-	SearchErrorDetails,
-	SearchProgressDetails,
-	SearchRenderDetails,
-	SearchRoute,
-} from "./types.js";
+import { formatSearchText, performSearch, providerEntryLabel, resolveRoutes } from "./search.js";
+import type { ConfigLoadResult, SearchErrorDetails, SearchProgressDetails, SearchRenderDetails } from "./types.js";
 
 const Params = Type.Object(
 	{
@@ -31,11 +19,6 @@ const Params = Type.Object(
 			Type.Array(Type.String({ maxLength: 253 }), {
 				maxItems: 100,
 				description: "Never include search results from these domains",
-			}),
-		),
-		use_fallback: Type.Optional(
-			Type.Boolean({
-				description: "Continue through the configured fallback chain when the primary route fails (default: false)",
 			}),
 		),
 		retry_on_empty: Type.Optional(
@@ -55,16 +38,13 @@ interface WebSearchToolContext {
 	modelRegistry: NativeModelRegistry;
 }
 
-function routeIdentity(route: SearchRoute): string {
-	return [route.source, route.provider, route.adapter, route.id, route.model, route.baseUrl].join(":");
-}
-
 function formatSearchProgressText(details: SearchProgressDetails): string {
+	const suffix = details.maxResults === undefined ? "" : ` (max ${details.maxResults})`;
 	if (details.currentProvider) {
-		return `Searching "${details.query}" via ${details.currentProvider} (max ${details.maxResults})`;
+		return `Searching "${details.query}" via ${details.currentProvider}${suffix}`;
 	}
 	const route = details.providerLabels.length > 0 ? details.providerLabels.join(" -> ") : "configured providers";
-	return `Searching "${details.query}" via ${route} (max ${details.maxResults})`;
+	return `Searching "${details.query}" via ${route}${suffix}`;
 }
 
 function searchErrorDetails(query: string, error: string, reason?: SearchErrorDetails["reason"]): SearchErrorDetails {
@@ -72,9 +52,6 @@ function searchErrorDetails(query: string, error: string, reason?: SearchErrorDe
 }
 
 export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
-	let routingState: SearchRoutingState | undefined;
-	let routingKey = "";
-
 	return defineTool<typeof Params, SearchRenderDetails>({
 		name: "web_search",
 		label: "Web Search",
@@ -96,27 +73,26 @@ export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
 			}
 
 			const config = loaded.config;
-			const useFallback = params.use_fallback ?? false;
 			const retryOnEmpty = params.retry_on_empty ?? false;
-			const maxResults = config.providers[0]?.maxResults ?? 10;
-			const nativeResolution = config.auto
+			const nativeResolution = config.enableNative
 				? await resolveNativeEntry(ctx?.model, ctx?.modelRegistry)
 				: { kind: "unmatched" as const };
-			if (nativeResolution.kind === "error" && !useFallback) {
+			const warnings: string[] = [];
+			if (nativeResolution.kind === "error" && !config.appendProvidersAsFallback) {
 				const message = nativeResolution.message;
 				const details = searchErrorDetails(params.query, message);
 				return { content: [{ type: "text", text: message }], details };
 			}
+			if (nativeResolution.kind === "error") warnings.push(nativeResolution.message);
 			const nativeRoute = nativeResolution.kind === "ready" ? nativeResolution.route : null;
+			const routes = resolveRoutes(config, nativeRoute ?? undefined);
+			const providerLabels = (config.appendProvidersAsFallback ? routes : routes.slice(0, 1)).map(
+				providerEntryLabel,
+			);
 			const progressDetails: SearchProgressDetails = {
 				phase: "searching",
 				query: params.query,
-				providerLabels: [
-					...(nativeRoute ? [providerEntryLabel(nativeRoute)] : []),
-					...(useFallback || !nativeRoute ? config.providers.map(providerEntryLabel) : []),
-				],
-				maxResults,
-				strategy: config.strategy,
+				providerLabels,
 				...(params.allowed_domains ? { allowedDomains: params.allowed_domains } : {}),
 				...(params.blocked_domains ? { blockedDomains: params.blocked_domains } : {}),
 			};
@@ -125,27 +101,8 @@ export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
 				details: progressDetails,
 			});
 
-			const configuredIdentity = config.providers.map((provider) =>
-				[provider.provider, provider.id, provider.model, provider.baseUrl, provider.priority, provider.weight].join(
-					":",
-				),
-			);
-			const nextRoutingKey = JSON.stringify({
-				strategy: config.strategy,
-				native: nativeRoute ? routeIdentity(nativeRoute) : null,
-				configured: configuredIdentity,
-			});
-			if (
-				!routingState ||
-				routingKey !== nextRoutingKey ||
-				routingState.successCounts.length !== config.providers.length
-			) {
-				routingState = createSearchRoutingState(config.providers.length);
-				routingKey = nextRoutingKey;
-			}
 			const request = {
 				query: params.query,
-				maxResults,
 				...(params.allowed_domains === undefined ? {} : { allowedDomains: params.allowed_domains }),
 				...(params.blocked_domains === undefined ? {} : { blockedDomains: params.blocked_domains }),
 			};
@@ -153,13 +110,13 @@ export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
 				config,
 				request,
 				signal,
-				routingState,
-				(providerLabel, attempts, routeLabels) => {
+				(providerLabel, attempts, routeLabels, maxResults) => {
 					const attemptProgress: SearchProgressDetails = {
 						...progressDetails,
 						currentProvider: providerLabel,
 						attempts: [...attempts],
 						routeLabels: [...routeLabels],
+						...(maxResults === undefined ? {} : { maxResults }),
 					};
 					onUpdate?.({
 						content: [{ type: "text", text: formatSearchProgressText(attemptProgress) }],
@@ -167,9 +124,10 @@ export function createWebSearchTool(getConfig: ConfigProvider): WebSearchTool {
 					});
 				},
 				nativeRoute ?? undefined,
-				{ useFallback, retryOnEmpty },
+				retryOnEmpty,
 			);
-			return { content: [{ type: "text", text: formatSearchText(details) }], details };
+			const result = warnings.length > 0 ? { ...details, warnings } : details;
+			return { content: [{ type: "text", text: formatSearchText(details) }], details: result };
 		},
 		renderCall: (args, theme) => renderSearchCall(args, theme),
 		renderResult: (result, options, theme) => renderSearchResult(result, options, theme),

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { loadWebsearchConfig, validateProviderConfig, validateWebsearchConfig } from "../src/websearch/config.js";
+import { loadWebsearchConfig, validateProviderConfig } from "../src/websearch/config.js";
 
 async function makeTempHome(): Promise<string> {
 	const root = join(tmpdir(), `pi-websearch-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
@@ -25,9 +25,8 @@ describe("loadWebsearchConfig", () => {
 			if (result.ok) {
 				expect(result.source).toBe("default:duckduckgo-html");
 				expect(result.config).toEqual({
-					strategy: "priority",
-					fallback: false,
-					auto: true,
+					appendProvidersAsFallback: true,
+					enableNative: true,
 					providers: [{ id: "default", provider: "duckduckgo-html", maxResults: 10 }],
 				});
 			}
@@ -45,12 +44,12 @@ describe("loadWebsearchConfig", () => {
 		await mkdir(globalPi, { recursive: true });
 		await writeFile(
 			join(projectPi, "websearch.json"),
-			JSON.stringify({ provider: "exa", apiKey: "exa-project", maxResults: 3 }),
+			JSON.stringify({ providers: [{ provider: "exa", apiKey: "exa-project", maxResults: 3 }] }),
 			"utf8",
 		);
 		await writeFile(
 			join(globalPi, "websearch.json"),
-			JSON.stringify({ provider: "tavily", apiKey: "global" }),
+			JSON.stringify({ providers: [{ provider: "tavily", apiKey: "global" }] }),
 			"utf8",
 		);
 
@@ -61,9 +60,8 @@ describe("loadWebsearchConfig", () => {
 			// then
 			expect(result.ok).toBe(true);
 			if (result.ok) {
-				expect(result.config.strategy).toBe("priority");
-				expect(result.config.fallback).toBe(false);
-				expect(result.config.auto).toBe(true);
+				expect(result.config.appendProvidersAsFallback).toBe(true);
+				expect(result.config.enableNative).toBe(true);
 				expect(result.config.providers).toEqual([{ provider: "exa", apiKey: "exa-project", maxResults: 3 }]);
 				expect(result.source).toBe(join(projectPi, "websearch.json"));
 			}
@@ -72,25 +70,26 @@ describe("loadWebsearchConfig", () => {
 		}
 	});
 
-	it("#given malformed auto field in file #when loading #then rejects instead of enabling native routing", async () => {
+	it("#given legacy auto field in file #when loading #then config is invalid with a migration hint", async () => {
 		const root = await makeTempHome();
 		const projectPi = join(root, ".pi");
 		await mkdir(projectPi, { recursive: true });
 		await writeFile(
 			join(projectPi, "websearch.json"),
-			JSON.stringify({ auto: "false", provider: "duckduckgo-html" }),
+			JSON.stringify({ auto: "false", providers: [{ provider: "duckduckgo-html" }] }),
 			"utf8",
 		);
 
 		try {
 			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain('legacy key "auto"');
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 
-	it("#given backend alias config #when loading config #then preserves explicit override", async () => {
+	it("#given legacy backend alias config #when loading config #then config is invalid", async () => {
 		// given
 		const root = await makeTempHome();
 		const projectPi = join(root, ".pi");
@@ -106,24 +105,20 @@ describe("loadWebsearchConfig", () => {
 			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 
 			// then
-			expect(result.ok).toBe(true);
-			if (result.ok) {
-				expect(result.source).toBe(join(projectPi, "websearch.json"));
-				expect(result.config.providers).toEqual([{ provider: "brave", apiKey: "brave-test" }]);
-			}
+			expect(result.ok).toBe(false);
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 
-	it("#given fallback_chain #when loading config #then normalizes it into the executable provider chain", async () => {
+	it("#given providers array #when loading config #then normalizes it into the executable provider chain", async () => {
 		const root = await makeTempHome();
 		const projectPi = join(root, ".pi");
 		await mkdir(projectPi, { recursive: true });
 		await writeFile(
 			join(projectPi, "websearch.json"),
 			JSON.stringify({
-				fallback_chain: [
+				providers: [
 					{ id: "tavily", provider: "tavily", apiKey: "tavily-test" },
 					{ id: "ddg", provider: "duckduckgo-html" },
 				],
@@ -136,7 +131,7 @@ describe("loadWebsearchConfig", () => {
 
 			expect(result.ok).toBe(true);
 			if (result.ok) {
-				expect(result.config.fallback).toBe(false);
+				expect(result.config.appendProvidersAsFallback).toBe(true);
 				expect(result.config.providers.map((entry) => entry.id)).toEqual(["tavily", "ddg"]);
 			}
 		} finally {
@@ -144,14 +139,14 @@ describe("loadWebsearchConfig", () => {
 		}
 	});
 
-	it("#given optional uninstalled plugin in fallback_chain #when loading #then skips it and keeps available entries", async () => {
+	it("#given optional uninstalled plugin in providers #when loading #then skips it and keeps available entries", async () => {
 		const root = await makeTempHome();
 		const projectPi = join(root, ".pi");
 		await mkdir(projectPi, { recursive: true });
 		await writeFile(
 			join(projectPi, "websearch.json"),
 			JSON.stringify({
-				fallback_chain: [
+				providers: [
 					{ id: "zhipu-mcp", provider: "zhipu-mcp", optional: true },
 					{ id: "ddg", provider: "duckduckgo-html" },
 				],
@@ -175,7 +170,7 @@ describe("loadWebsearchConfig", () => {
 		await writeFile(
 			join(projectPi, "websearch.json"),
 			JSON.stringify({
-				fallback_chain: [
+				providers: [
 					{ id: "tavily", provider: "tavily", optional: true },
 					{ id: "ddg", provider: "duckduckgo-html" },
 				],
@@ -198,7 +193,7 @@ describe("loadWebsearchConfig", () => {
 		await mkdir(projectPi, { recursive: true });
 		await writeFile(
 			join(projectPi, "websearch.json"),
-			JSON.stringify({ fallback_chain: [{ id: "missing-provider" }, { provider: "duckduckgo-html" }] }),
+			JSON.stringify({ providers: [{ id: "missing-provider" }, { provider: "duckduckgo-html" }] }),
 			"utf8",
 		);
 
@@ -210,14 +205,14 @@ describe("loadWebsearchConfig", () => {
 		}
 	});
 
-	it("#given providers and fallback_chain together #when loading config #then rejects ambiguous chains", async () => {
+	it("#given providers and legacy fallback_chain together #when loading config #then config is invalid with a migration hint", async () => {
 		const root = await makeTempHome();
 		const projectPi = join(root, ".pi");
 		await mkdir(projectPi, { recursive: true });
 		await writeFile(
 			join(projectPi, "websearch.json"),
 			JSON.stringify({
-				providers: [{ provider: "duckduckgo-html" }],
+				providers: [{ id: "kept", provider: "duckduckgo-html" }],
 				fallback_chain: [{ provider: "duckduckgo-html" }],
 			}),
 			"utf8",
@@ -226,12 +221,83 @@ describe("loadWebsearchConfig", () => {
 		try {
 			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain('legacy key "fallback_chain"');
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 
-	it("#given multiple providers #when loading config #then preserves routing policy", async () => {
+	it("#given legacy top-level provider shorthand #when loading config #then config is invalid", async () => {
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(join(projectPi, "websearch.json"), JSON.stringify({ provider: "duckduckgo-html" }), "utf8");
+
+		try {
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+			expect(result.ok).toBe(false);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given malformed enableNative in file #when loading config #then config is invalid", async () => {
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ enableNative: "false", providers: [{ provider: "duckduckgo-html" }] }),
+			"utf8",
+		);
+
+		try {
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+			expect(result.ok).toBe(false);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given enableNative false in file #when loading config #then native routing is disabled", async () => {
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ enableNative: false, providers: [{ provider: "duckduckgo-html" }] }),
+			"utf8",
+		);
+
+		try {
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+			expect(result.ok).toBe(true);
+			if (result.ok) expect(result.config.enableNative).toBe(false);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given appendProvidersAsFallback false in file #when loading config #then fallback is disabled", async () => {
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ appendProvidersAsFallback: false, providers: [{ provider: "duckduckgo-html" }] }),
+			"utf8",
+		);
+
+		try {
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+			expect(result.ok).toBe(true);
+			if (result.ok) expect(result.config.appendProvidersAsFallback).toBe(false);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given legacy strategy and weight keys #when loading config #then config is invalid with migration hints", async () => {
 		// given
 		const root = await makeTempHome();
 		const projectPi = join(root, ".pi");
@@ -240,7 +306,7 @@ describe("loadWebsearchConfig", () => {
 			join(projectPi, "websearch.json"),
 			JSON.stringify({
 				strategy: "round-robin",
-				fallback: true,
+				appendProvidersAsFallback: true,
 				providers: [
 					{
 						id: "anthropic-gateway",
@@ -260,29 +326,24 @@ describe("loadWebsearchConfig", () => {
 			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 
 			// then
-			expect(result.ok).toBe(true);
-			if (result.ok) {
-				expect(result.config.strategy).toBe("round-robin");
-				expect(result.config.providers).toHaveLength(2);
-				expect(result.config.providers[0]).toMatchObject({
-					id: "anthropic-gateway",
-					provider: "anthropic",
-					weight: 2,
-				});
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.message).toContain('legacy key "strategy"');
+				expect(result.message).toContain('legacy key "weight"');
 			}
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 
-	it("#given legacy config with auto false #when loading config #then disables native auto route", async () => {
+	it("#given legacy config with auto false #when loading config #then config is invalid with a migration hint", async () => {
 		// given
 		const root = await makeTempHome();
 		const projectPi = join(root, ".pi");
 		await mkdir(projectPi, { recursive: true });
 		await writeFile(
 			join(projectPi, "websearch.json"),
-			JSON.stringify({ provider: "exa", apiKey: "exa-test", auto: false }),
+			JSON.stringify({ auto: false, providers: [{ provider: "exa", apiKey: "exa-test" }] }),
 			"utf8",
 		);
 
@@ -291,14 +352,14 @@ describe("loadWebsearchConfig", () => {
 			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 
 			// then
-			expect(result.ok).toBe(true);
-			if (result.ok) expect(result.config.auto).toBe(false);
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain('legacy key "auto"');
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 
-	it("#given multi-provider config with auto false #when loading config #then disables native auto route", async () => {
+	it("#given multi-provider config with auto false #when loading config #then config is invalid with a migration hint", async () => {
 		// given
 		const root = await makeTempHome();
 		const projectPi = join(root, ".pi");
@@ -317,8 +378,8 @@ describe("loadWebsearchConfig", () => {
 			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 
 			// then
-			expect(result.ok).toBe(true);
-			if (result.ok) expect(result.config.auto).toBe(false);
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain('legacy key "auto"');
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
@@ -337,46 +398,86 @@ describe("loadWebsearchConfig", () => {
 
 			// then
 			expect(result.ok).toBe(false);
-			if (!result.ok) expect(result.message).toContain("at least one provider");
+			if (!result.ok) expect(result.message).toContain("providers");
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 });
 
-describe("validateWebsearchConfig", () => {
-	it("#given malformed recognized fields #when validating #then config is invalid", () => {
-		const invalidConfig = JSON.parse(
-			JSON.stringify({
-				strategy: "not-a-strategy",
-				fallback: false,
-				auto: true,
-				providers: [{ provider: "duckduckgo-html" }],
-			}),
+describe("config schema validation", () => {
+	it("#given maxResults out of range #when loading config #then config is invalid with the key path", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ providers: [{ provider: "exa", apiKey: "exa-test", maxResults: 0 }] }),
+			"utf8",
 		);
 
-		const result = validateWebsearchConfig(invalidConfig);
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 
-		expect(result.ok).toBe(false);
+			// then
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.message).toContain("providers.0.maxResults");
+				expect(result.message).toContain(">= 1");
+			}
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 
-	it("#given config with non-boolean auto #when validating #then config is invalid", () => {
+	it("#given unknown key in a provider entry #when loading config #then config is invalid naming the key", async () => {
 		// given
-		const invalidConfig = JSON.parse(
-			JSON.stringify({
-				strategy: "priority",
-				fallback: true,
-				auto: "yes",
-				providers: [{ provider: "exa", apiKey: "exa-test" }],
-			}),
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ providers: [{ provider: "exa", apiKey: "exa-test", maxresult: 5 }] }),
+			"utf8",
 		);
 
-		// when
-		const result = validateWebsearchConfig(invalidConfig);
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 
-		// then
-		expect(result.ok).toBe(false);
-		if (!result.ok) expect(result.message).toContain("auto");
+			// then
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain('unknown key "maxresult"');
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given headers with a non-string value #when loading config #then config is invalid instead of dropping the header", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({
+				providers: [{ provider: "searxng", baseUrl: "http://100.64.0.12:8888", headers: { Authorization: 123 } }],
+			}),
+			"utf8",
+		);
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain("headers");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -576,7 +677,7 @@ describe("validateProviderConfig", () => {
 		await mkdir(projectPi, { recursive: true });
 		await writeFile(
 			join(projectPi, "websearch.json"),
-			JSON.stringify({ provider: "codex", codexCommand: "codex" }),
+			JSON.stringify({ providers: [{ provider: "codex" }] }),
 			"utf8",
 		);
 
@@ -709,7 +810,7 @@ describe("validateProviderConfig", () => {
 		if (!result.ok) expect(result.reason).toBe("invalid_config");
 	});
 
-	it("#given optional searxng without baseUrl in fallback_chain #when loading #then skips it and keeps other entries", async () => {
+	it("#given optional searxng without baseUrl in providers #when loading #then skips it and keeps other entries", async () => {
 		// given
 		const root = await makeTempHome();
 		const projectPi = join(root, ".pi");
@@ -717,7 +818,7 @@ describe("validateProviderConfig", () => {
 		await writeFile(
 			join(projectPi, "websearch.json"),
 			JSON.stringify({
-				fallback_chain: [
+				providers: [
 					{ id: "lan-searx", provider: "searxng", optional: true },
 					{ id: "ddg", provider: "duckduckgo-html" },
 				],
@@ -781,7 +882,7 @@ describe("validateProviderConfig", () => {
 		await mkdir(projectPi, { recursive: true });
 		await writeFile(
 			join(projectPi, "websearch.json"),
-			JSON.stringify({ provider: "searxng", baseUrl: "http://100.64.0.12:8888", headers: "nope" }),
+			JSON.stringify({ providers: [{ provider: "searxng", baseUrl: "http://100.64.0.12:8888", headers: "nope" }] }),
 			"utf8",
 		);
 

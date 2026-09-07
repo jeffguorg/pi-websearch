@@ -13,6 +13,7 @@ import {
 } from "./shared.js";
 
 export const serperProvider: ProviderModule = {
+	maxResultsLimit: 20,
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		const body: JsonObject = {
 			q: appendDomainFilters(request.query, allowedDomains, blockedDomains),

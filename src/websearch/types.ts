@@ -23,7 +23,6 @@ export type SearchProvider =
 
 export type SearchContextSize = "low" | "medium" | "high";
 export type CodexSearchMode = "cached" | "live";
-export type RoutingStrategy = "priority" | "round-robin" | "fill-first";
 
 export interface SearchProviderConfig {
 	id?: string;
@@ -47,7 +46,6 @@ export interface SearchProviderConfig {
 
 export interface SearchProviderEntry extends SearchProviderConfig {
 	priority?: number;
-	weight?: number;
 	/** Omit this chain entry when its plugin or credentials are unavailable. */
 	optional?: boolean;
 }
@@ -55,15 +53,13 @@ export interface SearchProviderEntry extends SearchProviderConfig {
 /** A provider entry resolved for execution. Native routes keep the active model
  * provider as provenance while adapter selects the wire protocol implementation. */
 export interface SearchRoute extends SearchProviderEntry {
-	source: "native" | "configured";
 	adapter: string;
 	headers?: Record<string, string>;
 }
 
 export interface WebsearchConfig {
-	strategy: RoutingStrategy;
-	fallback: boolean;
-	auto: boolean;
+	appendProvidersAsFallback: boolean;
+	enableNative: boolean;
 	providers: SearchProviderEntry[];
 }
 
@@ -76,14 +72,8 @@ export interface SearchUserLocation {
 
 export interface SearchRequest {
 	query: string;
-	maxResults: number;
 	allowedDomains?: string[];
 	blockedDomains?: string[];
-}
-
-export interface SearchExecutionPolicy {
-	useFallback: boolean;
-	retryOnEmpty: boolean;
 }
 
 export interface BuiltSearchRequest {
@@ -101,7 +91,6 @@ export interface SearchResultItem {
 	snippet?: string;
 	score?: number;
 	source?: string;
-	route?: string;
 	publishedAt?: string;
 }
 
@@ -112,21 +101,22 @@ export interface SearchDetails {
 	results: SearchResultItem[];
 	durationMs: number;
 	truncated: boolean;
-	strategy?: RoutingStrategy;
 	attempts?: SearchAttempt[];
 	answer?: string;
 	error?: string;
+	warnings?: string[];
 }
 
 export interface SearchProgressDetails {
 	phase: "searching";
 	query: string;
 	providerLabels: string[];
-	maxResults: number;
+	/** Effective result cap of the provider currently being attempted, present only
+	 * on attempt progress for providers that take a result-count parameter. */
+	maxResults?: number;
 	currentProvider?: string;
 	attempts?: SearchAttempt[];
 	routeLabels?: string[];
-	strategy?: RoutingStrategy;
 	allowedDomains?: string[];
 	blockedDomains?: string[];
 }

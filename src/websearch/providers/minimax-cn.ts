@@ -230,6 +230,7 @@ function normalizeAnthropicPayload(payload: unknown, maxResults: number): Search
 }
 
 export const minimaxCnProvider: ProviderModule = {
+	maxResultsLimit: 50,
 	async search(ctx: BuildContext, signal: AbortSignal): Promise<SearchResultItem[]> {
 		const apiKey = resolveApiKey(ctx.config);
 		if (!apiKey) throw new Error("minimax-cn requires an apiKey");
@@ -245,7 +246,7 @@ export const minimaxCnProvider: ProviderModule = {
 };
 
 /** Resolved headers from native routes (SearchRoute.headers); absent on plain
- *  provider configs from fallback_chain. */
+ *  provider configs from the providers chain. */
 interface AuthHeaders {
 	headers?: Record<string, string>;
 }

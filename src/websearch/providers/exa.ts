@@ -4,6 +4,7 @@ import type { BuildContext, ProviderModule } from "./shared.js";
 import { clamp, collect, contentHeaders, getArray, getNumber, getObject, getString, result } from "./shared.js";
 
 export const exaProvider: ProviderModule = {
+	maxResultsLimit: 20,
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		const headers = contentHeaders({ "x-api-key": config.apiKey ?? "" });
 		const body: JsonObject = { query: request.query, numResults: clamp(maxResults, 1, 20) };

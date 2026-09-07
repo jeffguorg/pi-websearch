@@ -13,7 +13,7 @@ import { perplexityProvider } from "./providers/perplexity.js";
 import { searxngProvider } from "./providers/searxng.js";
 import { serperProvider } from "./providers/serper.js";
 import type { ProviderModule, SearchProviderExtension } from "./providers/shared.js";
-import { isJsonObject, parseObjectPayload, resolveDomainFilters } from "./providers/shared.js";
+import { DEFAULT_MAX_RESULTS, isJsonObject, parseObjectPayload, resolveDomainFilters } from "./providers/shared.js";
 import { tavilyProvider } from "./providers/tavily.js";
 import { xaiProvider } from "./providers/xai.js";
 import { zAiProvider } from "./providers/z-ai.js";
@@ -55,6 +55,11 @@ const EXTERNAL_PROVIDERS = new Set<string>();
 
 /** Native auto-route bindings contributed by external scripts. */
 const EXTERNAL_BINDINGS: SearchProviderExtension[] = [];
+
+/** Per-provider API cap for result counts, undefined when the provider takes no count parameter. */
+export function providerMaxResultsLimit(provider: string): number | undefined {
+	return PROVIDER_MODULES[provider]?.maxResultsLimit;
+}
 
 export function isKnownProvider(provider: string): boolean {
 	return provider in PROVIDER_MODULES;
@@ -117,7 +122,7 @@ export function buildSearchRequest(
 	config: SearchProviderConfig | SearchRoute,
 	request: SearchRequest,
 ): BuiltSearchRequest {
-	const maxResults = config.maxResults ?? request.maxResults;
+	const maxResults = config.maxResults ?? DEFAULT_MAX_RESULTS;
 	const { allowedDomains, blockedDomains } = resolveDomainFilters(config, request);
 	const adapter = "adapter" in config ? config.adapter : config.provider;
 	const module = PROVIDER_MODULES[adapter];
@@ -189,7 +194,7 @@ export async function executeDirectProviderSearch(
 	request: SearchRequest,
 	signal: AbortSignal,
 ): Promise<SearchResultItem[] | undefined> {
-	const maxResults = config.maxResults ?? request.maxResults;
+	const maxResults = config.maxResults ?? DEFAULT_MAX_RESULTS;
 	const { allowedDomains, blockedDomains } = resolveDomainFilters(config, request);
 	const adapter = "adapter" in config ? config.adapter : config.provider;
 	const module = PROVIDER_MODULES[adapter];

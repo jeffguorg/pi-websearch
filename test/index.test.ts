@@ -13,9 +13,8 @@ const activeConfig: ConfigLoadResult = {
 	ok: true,
 	source: "test",
 	config: {
-		strategy: "priority",
-		fallback: true,
-		auto: true,
+		appendProvidersAsFallback: true,
+		enableNative: true,
 		providers: [{ id: "default", provider: "duckduckgo-html" }],
 	},
 };
@@ -86,9 +85,8 @@ describe("websearch extension state", () => {
 			ok: true,
 			source: "test",
 			config: {
-				strategy: "priority",
-				fallback: true,
-				auto: true,
+				appendProvidersAsFallback: true,
+				enableNative: true,
 				providers: [
 					{ id: "primary", provider: "exa", apiKey: "test-key" },
 					{ id: "backup", provider: "duckduckgo-html" },
@@ -99,6 +97,32 @@ describe("websearch extension state", () => {
 		await websearchExtension(harness.pi as never);
 		await harness.getSessionStart()?.({}, context("openai-codex"));
 		const notify = vi.fn();
+
+		await harness.getStatusCommand()?.("status", { ui: { notify } });
+
+		expect(notify).toHaveBeenCalledWith(
+			expect.stringContaining("fallback=on, native=enabled, providers=exa/primary, duckduckgo-html/backup"),
+			"info",
+		);
+	});
+
+	it("#given providers with priorities out of file order #when status runs #then lists providers in execution order", async () => {
+		loadWebsearchConfig.mockResolvedValue({
+			ok: true,
+			source: "test",
+			config: {
+				appendProvidersAsFallback: true,
+				enableNative: true,
+				providers: [
+					{ id: "backup", provider: "duckduckgo-html", priority: 10 },
+					{ id: "primary", provider: "exa", apiKey: "test-key" },
+				],
+			},
+		});
+		const harness = createPi();
+		await websearchExtension(harness.pi as never);
+		const notify = vi.fn();
+		await harness.getSessionStart()?.({}, context("openai", notify));
 
 		await harness.getStatusCommand()?.("status", { ui: { notify } });
 

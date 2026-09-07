@@ -1,6 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { Ajv, type ErrorObject } from "ajv";
 import { isAllowedConfiguredBaseUrl } from "./provider-endpoints.js";
 import { isExternalProvider, isRegisteredProvider } from "./providers.js";
 import type {
@@ -10,7 +11,6 @@ import type {
 	JsonObject,
 	JsonValue,
 	ProviderValidationResult,
-	RoutingStrategy,
 	SearchContextSize,
 	SearchProviderConfig,
 	SearchProviderEntry,
@@ -20,14 +20,85 @@ import type {
 
 const CONTEXT_SIZES: readonly SearchContextSize[] = ["low", "medium", "high"];
 const CODEX_MODES: readonly CodexSearchMode[] = ["cached", "live"];
-const STRATEGIES: readonly RoutingStrategy[] = ["priority", "round-robin", "fill-first"];
 const DEFAULT_FREE_CONFIG: WebsearchConfig = {
-	strategy: "priority",
-	fallback: false,
-	auto: true,
+	appendProvidersAsFallback: true,
+	enableNative: true,
 	providers: [{ id: "default", provider: "duckduckgo-html", maxResults: 10 }],
 };
 
+/** Structural schema for websearch config files. Semantic checks (credentials,
+ * provider availability) stay in validateWebsearchConfig; everything about key
+ * presence, types, and value ranges is decided here. */
+const STRING_FIELD = { type: "string", minLength: 1 };
+const STRING_ARRAY_FIELD = { type: "array", items: { type: "string", minLength: 1 } };
+
+const providerEntrySchema = {
+	type: "object",
+	additionalProperties: false,
+	required: ["provider"],
+	properties: {
+		id: STRING_FIELD,
+		provider: STRING_FIELD,
+		apiKey: STRING_FIELD,
+		baseUrl: STRING_FIELD,
+		searchEngineId: STRING_FIELD,
+		model: STRING_FIELD,
+		maxResults: { type: "integer", minimum: 1, maximum: 50 },
+		timeoutMs: { type: "integer", minimum: 1 },
+		priority: { type: "integer" },
+		optional: { type: "boolean" },
+		allowedDomains: STRING_ARRAY_FIELD,
+		blockedDomains: STRING_ARRAY_FIELD,
+		headers: { type: "object", additionalProperties: { type: "string", minLength: 1 } },
+		userLocation: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				country: STRING_FIELD,
+				region: STRING_FIELD,
+				city: STRING_FIELD,
+				timezone: STRING_FIELD,
+			},
+		},
+		openRouterRouting: { type: "object" },
+		codexMode: { enum: [...CODEX_MODES] },
+		searchContextSize: { enum: [...CONTEXT_SIZES] },
+	},
+};
+
+const websearchConfigSchema = {
+	type: "object",
+	additionalProperties: false,
+	properties: {
+		appendProvidersAsFallback: { type: "boolean" },
+		enableNative: { type: "boolean" },
+		providers: { type: "array", minItems: 1, items: providerEntrySchema },
+	},
+};
+
+/** Config keys from pre-0.3 releases. Rejected with a migration hint instead of
+ * being silently ignored, so stale configs fail loudly at startup. */
+const LEGACY_ROOT_KEYS = new Set(["auto", "strategy", "weight", "fallback", "fallback_chain", "provider", "backend"]);
+const LEGACY_ENTRY_KEYS = new Set(["backend", "weight"]);
+
+const ajv = new Ajv({ allErrors: true });
+const validateWebsearchSchema = ajv.compile(websearchConfigSchema);
+
+function formatSchemaError(error: ErrorObject): string {
+	const where = error.instancePath === "" ? "config" : error.instancePath.slice(1).replaceAll("/", ".");
+	if (error.keyword === "additionalProperties") {
+		const key = String(error.params["additionalProperty"]);
+		const legacy = error.instancePath === "" ? LEGACY_ROOT_KEYS : LEGACY_ENTRY_KEYS;
+		if (legacy.has(key)) return `${where}: legacy key "${key}" is no longer supported; remove it`;
+		return `${where}: unknown key "${key}" is not allowed`;
+	}
+	return `${where}: ${error.message ?? "failed schema validation"}`;
+}
+
+function schemaErrorsFor(raw: JsonObject): string[] | null {
+	if (validateWebsearchSchema(raw)) return null;
+	return (validateWebsearchSchema.errors ?? []).map(formatSchemaError);
+}
 export interface ConfigLoadOptions {
 	cwd: string;
 	homeDir?: string;
@@ -67,10 +138,6 @@ function optionalContextSize(value: JsonValue | undefined): SearchContextSize | 
 
 function optionalCodexMode(value: JsonValue | undefined): CodexSearchMode | undefined {
 	return oneOf(CODEX_MODES, value) ? value : undefined;
-}
-
-function optionalStrategy(value: JsonValue | undefined): RoutingStrategy | undefined {
-	return oneOf(STRATEGIES, value) ? value : undefined;
 }
 
 function validOptionalString(raw: JsonObject, key: string): boolean {
@@ -119,7 +186,7 @@ function parseJsonObject(content: string): JsonObject | null {
 
 function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 	const stringFields = ["id", "apiKey", "baseUrl", "searchEngineId", "model"];
-	const numberFields = ["maxResults", "timeoutMs", "priority", "weight"];
+	const numberFields = ["maxResults", "timeoutMs", "priority"];
 	if (
 		stringFields.some((key) => !validOptionalString(raw, key)) ||
 		numberFields.some((key) => !validOptionalNumber(raw, key)) ||
@@ -133,7 +200,7 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 	) {
 		return null;
 	}
-	const provider = optionalProvider(raw["provider"]) ?? optionalProvider(raw["backend"]);
+	const provider = optionalProvider(raw["provider"]);
 	if (!provider) return null;
 
 	const config: SearchProviderEntry = { provider };
@@ -154,7 +221,6 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 	const openRouterRouting = isJsonObject(raw["openRouterRouting"]) ? raw["openRouterRouting"] : undefined;
 	const timeoutMs = optionalNumber(raw["timeoutMs"]);
 	const priority = optionalNumber(raw["priority"]);
-	const weight = optionalNumber(raw["weight"]);
 	const optional = optionalBoolean(raw["optional"]);
 
 	if (id) config.id = id;
@@ -172,7 +238,6 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 	if (openRouterRouting) config.openRouterRouting = openRouterRouting;
 	if (timeoutMs !== undefined) config.timeoutMs = timeoutMs;
 	if (priority !== undefined) config.priority = priority;
-	if (weight !== undefined) config.weight = weight;
 	if (optional !== undefined) config.optional = optional;
 
 	return config;
@@ -180,36 +245,22 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 
 function configFromObject(raw: JsonObject): WebsearchConfig | null {
 	if (
-		("auto" in raw && typeof raw["auto"] !== "boolean") ||
-		("fallback" in raw && typeof raw["fallback"] !== "boolean") ||
-		("strategy" in raw && !oneOf(STRATEGIES, raw["strategy"])) ||
-		("providers" in raw && !Array.isArray(raw["providers"])) ||
-		("fallback_chain" in raw && !Array.isArray(raw["fallback_chain"]))
+		("appendProvidersAsFallback" in raw && typeof raw["appendProvidersAsFallback"] !== "boolean") ||
+		("enableNative" in raw && typeof raw["enableNative"] !== "boolean") ||
+		("providers" in raw && !Array.isArray(raw["providers"]))
 	) {
 		return null;
 	}
-	const auto = optionalBoolean(raw["auto"]) ?? true;
-	const providersValue = raw["providers"];
-	const fallbackChainValue = raw["fallback_chain"];
-	if (providersValue !== undefined && fallbackChainValue !== undefined) return null;
-	const chainValue = fallbackChainValue ?? providersValue;
-	const rawProviders = Array.isArray(chainValue) ? chainValue : undefined;
-	if (rawProviders) {
-		if (optionalProvider(raw["provider"]) || optionalProvider(raw["backend"])) return null;
-		const parsedProviders = rawProviders.map((value) =>
-			isJsonObject(value) ? providerEntryFromObject(value) : null,
-		);
-		if (parsedProviders.some((entry) => entry === null)) return null;
-		const providers = parsedProviders
-			.filter((entry): entry is SearchProviderEntry => entry !== null)
-			.filter((entry) => isRegisteredProvider(entry.provider) || !entry.optional);
-		const strategy = optionalStrategy(raw["strategy"]) ?? "priority";
-		const fallback = optionalBoolean(raw["fallback"]) ?? false;
-		return { strategy, fallback, auto, providers };
-	}
-
-	const provider = providerEntryFromObject(raw);
-	return provider ? { strategy: "priority", fallback: false, auto, providers: [provider] } : null;
+	const enableNative = optionalBoolean(raw["enableNative"]) ?? true;
+	const rawProviders = raw["providers"];
+	if (!Array.isArray(rawProviders)) return null;
+	const parsedProviders = rawProviders.map((value) => (isJsonObject(value) ? providerEntryFromObject(value) : null));
+	if (parsedProviders.some((entry) => entry === null)) return null;
+	const providers = parsedProviders
+		.filter((entry): entry is SearchProviderEntry => entry !== null)
+		.filter((entry) => isRegisteredProvider(entry.provider) || !entry.optional);
+	const appendProvidersAsFallback = optionalBoolean(raw["appendProvidersAsFallback"]) ?? true;
+	return { appendProvidersAsFallback, enableNative, providers };
 }
 
 function hasApiKey(config: SearchProviderConfig): boolean {
@@ -227,10 +278,6 @@ export function validateProviderConfig(config: SearchProviderEntry): ProviderVal
 			reason: "invalid_config",
 			message: "Provider config cannot specify both allowedDomains and blockedDomains.",
 		};
-	}
-
-	if (config.weight !== undefined && config.weight <= 0) {
-		return { ok: false, reason: "invalid_config", message: "Provider weight must be greater than 0." };
 	}
 
 	if (config.timeoutMs !== undefined && config.timeoutMs <= 0) {
@@ -284,15 +331,6 @@ export function validateProviderConfig(config: SearchProviderEntry): ProviderVal
 export function validateWebsearchConfig(
 	config: WebsearchConfig,
 ): { ok: true; config: WebsearchConfig } | { ok: false; reason: ConfigLoadFailureReason; message: string } {
-	if (!STRATEGIES.includes(config.strategy)) {
-		return { ok: false, reason: "invalid_config", message: `Unsupported routing strategy: ${config.strategy}` };
-	}
-	if (typeof config.auto !== "boolean") {
-		return { ok: false, reason: "invalid_config", message: "Websearch config auto must be a boolean." };
-	}
-	if (typeof config.fallback !== "boolean") {
-		return { ok: false, reason: "invalid_config", message: "Websearch config fallback must be a boolean." };
-	}
 	if (config.providers.length === 0) {
 		return { ok: false, reason: "invalid_config", message: "Websearch config requires at least one provider." };
 	}
@@ -336,6 +374,15 @@ export async function loadWebsearchConfig(options: ConfigLoadOptions): Promise<C
 		const raw = parseJsonObject(await readFile(path, "utf8"));
 		if (!raw) {
 			return { ok: false, reason: "invalid_config", message: `Invalid JSON object in ${path}`, source: path };
+		}
+		const schemaErrors = schemaErrorsFor(raw);
+		if (schemaErrors) {
+			return {
+				ok: false,
+				reason: "invalid_config",
+				message: `Invalid websearch config in ${path}: ${schemaErrors.join("; ")}`,
+				source: path,
+			};
 		}
 		const config = configFromObject(raw);
 		if (!config) {

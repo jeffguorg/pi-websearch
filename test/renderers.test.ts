@@ -52,7 +52,6 @@ describe("renderSearchResult", () => {
 			results: [{ title: "Pi", url: "https://example.com/pi", snippet: "Pi docs" }],
 			durationMs: 42,
 			truncated: false,
-			strategy: "priority",
 			attempts: [{ provider: "exa", entryId: "exa-search", durationMs: 42, resultsCount: 1 }],
 		};
 
@@ -83,7 +82,6 @@ describe("renderSearchResult", () => {
 			],
 			durationMs: 42,
 			truncated: false,
-			strategy: "priority",
 		};
 
 		// when
@@ -176,7 +174,6 @@ describe("renderSearchResult native entry label", () => {
 			results: [{ title: "Native", url: "https://example.com/native", snippet: "snip" }],
 			durationMs: 7,
 			truncated: false,
-			strategy: "priority",
 			attempts: [{ provider: "openai", entryId: "native", durationMs: 7, resultsCount: 1 }],
 		};
 
@@ -193,5 +190,79 @@ describe("renderSearchResult native entry label", () => {
 
 		expect(collapsed).toContain("via openai/native");
 		expect(expanded).toContain("route openai/native:1");
+		expect(expanded).not.toMatch(/\((?:priority|round-robin|fill-first)\)/);
+		expect(collapsed).not.toMatch(/\((?:priority|round-robin|fill-first)\)/);
+	});
+
+	describe("warnings", () => {
+		const details: SearchDetails = {
+			provider: "exa",
+			entryId: "manual",
+			query: "warned search",
+			results: [{ title: "Manual", url: "https://manual.example.com", snippet: "snip" }],
+			durationMs: 9,
+			truncated: false,
+			attempts: [{ provider: "exa", entryId: "manual", durationMs: 9, resultsCount: 1 }],
+			warnings: ["Native search authentication could not be resolved for openai/gpt-5.5"],
+		};
+
+		it("#given expanded result with warnings #when rendering #then shows warning lines", () => {
+			const expanded = renderSearchResult(
+				{ content: [{ type: "text", text: "ok" }], details },
+				{ expanded: true },
+				theme,
+			)
+				.render(160)
+				.join("\n");
+
+			expect(expanded).toContain("Native search authentication could not be resolved");
+		});
+
+		it("#given collapsed result with warnings #when rendering #then hides warning lines", () => {
+			const collapsed = renderSearchResult({ content: [{ type: "text", text: "ok" }], details }, {}, theme)
+				.render(160)
+				.join("\n");
+
+			expect(collapsed).not.toContain("Native search authentication");
+		});
+	});
+
+	describe("warnings on failed searches", () => {
+		const errorDetails: SearchDetails = {
+			provider: "exa",
+			entryId: "manual",
+			query: "failed search",
+			results: [],
+			durationMs: 12,
+			truncated: false,
+			error: "All search providers failed: exa returned 503",
+			warnings: ["Native search authentication could not be resolved for openai/gpt-5.5"],
+		};
+
+		it("#given expanded error result with warnings #when rendering #then shows the error and the warning lines", () => {
+			const expanded = renderSearchResult(
+				{ content: [{ type: "text", text: "error" }], details: errorDetails },
+				{ expanded: true },
+				theme,
+			)
+				.render(160)
+				.join("\n");
+
+			expect(expanded).toContain("All search providers failed");
+			expect(expanded).toContain("Native search authentication could not be resolved");
+		});
+
+		it("#given collapsed error result with warnings #when rendering #then hides warning lines", () => {
+			const collapsed = renderSearchResult(
+				{ content: [{ type: "text", text: "error" }], details: errorDetails },
+				{},
+				theme,
+			)
+				.render(160)
+				.join("\n");
+
+			expect(collapsed).toContain("All search providers failed");
+			expect(collapsed).not.toContain("Native search authentication");
+		});
 	});
 });

@@ -4,6 +4,7 @@ import type { BuildContext, ProviderModule } from "./shared.js";
 import { appendDomainFilters, clamp, collect, getArray, getObject, getString, result } from "./shared.js";
 
 export const googleCseProvider: ProviderModule = {
+	maxResultsLimit: 10,
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		const url = new URL(providerUrl(config));
 		url.searchParams.set("q", appendDomainFilters(request.query, allowedDomains, blockedDomains));
