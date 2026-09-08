@@ -17,7 +17,7 @@
 //   normalizeResponse(data)   -> SearchResultItem[]
 //
 // `ctx.config` carries { provider, baseUrl, apiKey, model, maxResults, ... }.
-// `ctx.request` carries { query, maxResults, allowedDomains, blockedDomains }.
+// `ctx.request` carries { query, allowedDomains, blockedDomains }.
 
 function pick(obj: any, keys: string[]): Record<string, any> {
 	const out: Record<string, any> = {};

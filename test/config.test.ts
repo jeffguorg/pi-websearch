@@ -83,13 +83,16 @@ describe("loadWebsearchConfig", () => {
 		try {
 			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 			expect(result.ok).toBe(false);
-			if (!result.ok) expect(result.message).toContain('legacy key "auto"');
+			if (!result.ok) {
+				expect(result.message).toContain('legacy key "auto"');
+				expect(result.message).toContain('use "enableNative"');
+			}
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 
-	it("#given legacy backend alias config #when loading config #then config is invalid", async () => {
+	it("#given legacy backend alias config #when loading config #then config is invalid with a rename hint", async () => {
 		// given
 		const root = await makeTempHome();
 		const projectPi = join(root, ".pi");
@@ -106,6 +109,7 @@ describe("loadWebsearchConfig", () => {
 
 			// then
 			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain(`rename it to "provider"`);
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
@@ -221,13 +225,16 @@ describe("loadWebsearchConfig", () => {
 		try {
 			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 			expect(result.ok).toBe(false);
-			if (!result.ok) expect(result.message).toContain('legacy key "fallback_chain"');
+			if (!result.ok) {
+				expect(result.message).toContain('legacy key "fallback_chain"');
+				expect(result.message).toContain('merge its entries into "providers"');
+			}
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 
-	it("#given legacy top-level provider shorthand #when loading config #then config is invalid", async () => {
+	it("#given legacy top-level provider shorthand #when loading config #then config is invalid with a wrap hint", async () => {
 		const root = await makeTempHome();
 		const projectPi = join(root, ".pi");
 		await mkdir(projectPi, { recursive: true });
@@ -236,6 +243,7 @@ describe("loadWebsearchConfig", () => {
 		try {
 			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain('wrap the entry in a "providers" array');
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
@@ -254,6 +262,7 @@ describe("loadWebsearchConfig", () => {
 		try {
 			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
 			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain("enableNative");
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
@@ -330,6 +339,7 @@ describe("loadWebsearchConfig", () => {
 			if (!result.ok) {
 				expect(result.message).toContain('legacy key "strategy"');
 				expect(result.message).toContain('legacy key "weight"');
+				expect(result.message).toContain("routes run in priority order");
 			}
 		} finally {
 			await rm(root, { recursive: true, force: true });
@@ -353,7 +363,10 @@ describe("loadWebsearchConfig", () => {
 
 			// then
 			expect(result.ok).toBe(false);
-			if (!result.ok) expect(result.message).toContain('legacy key "auto"');
+			if (!result.ok) {
+				expect(result.message).toContain('legacy key "auto"');
+				expect(result.message).toContain('use "enableNative"');
+			}
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
@@ -379,7 +392,10 @@ describe("loadWebsearchConfig", () => {
 
 			// then
 			expect(result.ok).toBe(false);
-			if (!result.ok) expect(result.message).toContain('legacy key "auto"');
+			if (!result.ok) {
+				expect(result.message).toContain('legacy key "auto"');
+				expect(result.message).toContain('use "enableNative"');
+			}
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
@@ -479,6 +495,198 @@ describe("config schema validation", () => {
 			await rm(root, { recursive: true, force: true });
 		}
 	});
+
+	it("#given config without a providers key #when loading config #then schema names the missing key", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(join(projectPi, "websearch.json"), JSON.stringify({ enableNative: true }), "utf8");
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain("required property 'providers'");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given maxResults above the provider-agnostic schema cap #when loading config #then config is invalid with the key path", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ providers: [{ provider: "exa", apiKey: "exa-test", maxResults: 51 }] }),
+			"utf8",
+		);
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.message).toContain("providers.0.maxResults");
+				expect(result.message).toContain("<= 50");
+			}
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given a fractional maxResults #when loading config #then config is invalid requiring an integer", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ providers: [{ provider: "exa", apiKey: "exa-test", maxResults: 5.5 }] }),
+			"utf8",
+		);
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.message).toContain("providers.0.maxResults");
+				expect(result.message).toContain("integer");
+			}
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given an unknown key at the config root #when loading config #then config is invalid naming the key", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ retries: 2, providers: [{ provider: "duckduckgo-html" }] }),
+			"utf8",
+		);
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain('config: unknown key "retries"');
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given a legacy backend key inside a provider entry #when loading config #then the hint says to rename it", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ providers: [{ provider: "exa", apiKey: "exa-test", backend: "brave" }] }),
+			"utf8",
+		);
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.message).toContain('providers.0: legacy key "backend"');
+				expect(result.message).toContain('rename it to "provider"');
+			}
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given an unknown key named like a legacy key nested in userLocation #when loading config #then it is reported as unknown, not legacy", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ providers: [{ provider: "duckduckgo-html", userLocation: { backend: "x" } }] }),
+			"utf8",
+		);
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.message).toContain('providers.0.userLocation: unknown key "backend"');
+				expect(result.message).not.toContain("legacy key");
+			}
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given headers with a whitespace-only value #when loading config #then config is invalid instead of dropping the header", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ providers: [{ provider: "searxng", headers: { "X-Trace": "   " } }] }),
+			"utf8",
+		);
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain("providers.0.headers");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("#given a header name that is not a valid HTTP token #when loading config #then config is invalid naming the name", async () => {
+		// given
+		const root = await makeTempHome();
+		const projectPi = join(root, ".pi");
+		await mkdir(projectPi, { recursive: true });
+		await writeFile(
+			join(projectPi, "websearch.json"),
+			JSON.stringify({ providers: [{ provider: "searxng", headers: { "X Bad": "v" } }] }),
+			"utf8",
+		);
+
+		try {
+			// when
+			const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+			// then
+			expect(result.ok).toBe(false);
+			if (!result.ok) expect(result.message).toContain("providers.0.headers");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
 });
 
 it("#given provider entry with timeoutMs #when loading config #then preserves timeout", async () => {
@@ -502,6 +710,31 @@ it("#given provider entry with timeoutMs #when loading config #then preserves ti
 		expect(result.ok).toBe(true);
 		if (result.ok) {
 			expect(result.config.providers[0]).toMatchObject({ id: "slow", timeoutMs: 15000 });
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+it("#given the zai provider alias #when loading config #then normalizes to z-ai", async () => {
+	// given
+	const root = await makeTempHome();
+	const projectPi = join(root, ".pi");
+	await mkdir(projectPi, { recursive: true });
+	await writeFile(
+		join(projectPi, "websearch.json"),
+		JSON.stringify({ providers: [{ id: "glm", provider: "zai", apiKey: "glm-test" }] }),
+		"utf8",
+	);
+
+	try {
+		// when
+		const result = await loadWebsearchConfig({ cwd: root, homeDir: root });
+
+		// then
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.config.providers[0]).toMatchObject({ id: "glm", provider: "z-ai" });
 		}
 	} finally {
 		await rm(root, { recursive: true, force: true });
@@ -851,7 +1084,7 @@ describe("validateProviderConfig", () => {
 						id: "searx",
 						provider: "searxng",
 						baseUrl: "http://100.64.0.12:8888",
-						headers: { Authorization: "Basic cGk6c2VjcmV0", "X-Empty": "  " },
+						headers: { Authorization: "Basic cGk6c2VjcmV0", "X-Trace": "trace-1" },
 					},
 				],
 			}),

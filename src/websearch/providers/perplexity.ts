@@ -22,7 +22,9 @@ function normalizeResultList(items: JsonValue[]): SearchResultItem[] {
 }
 
 export const perplexityProvider: ProviderModule = {
-	maxResultsLimit: 20,
+	// Only the query API takes max_results; the chat-completions path (model set)
+	// returns search_results without a count parameter.
+	maxResultsLimit: (config) => (config.model ? undefined : 20),
 	buildRequest({ config, request, maxResults, allowedDomains, blockedDomains }: BuildContext): BuiltSearchRequest {
 		if (config.model) {
 			const body: JsonObject = {

@@ -17,7 +17,7 @@ The public tool schema matches free-code:
 
 Only `query` is required. `allowed_domains` and `blocked_domains` are mutually exclusive for a single tool call. Result limits are configured per provider, not exposed in the tool schema.
 
-Fallback is configured, not authorized per call. With `appendProvidersAsFallback: true` (the default), an operational failure advances to the next configured route. A successful empty response is returned immediately and is never labeled as a failure. Set `retry_on_empty: true` on a call to continue the chain after an empty response. The config file is validated against a strict schema: unknown keys, wrong value types, and out-of-range numbers are rejected with the offending key path. Legacy keys (`auto`, `strategy`, `weight`, `fallback`, `fallback_chain`, top-level `provider`/`backend`) are rejected the same way, so stale configs fail loudly at startup.
+Fallback is configured, not authorized per call. With `appendProvidersAsFallback: true` (the default), an operational failure advances to the next configured route. A successful empty response is returned immediately and is never labeled as a failure. Set `retry_on_empty: true` on a call to continue the chain after an empty response. The config file is validated against a strict schema: unknown keys, wrong value types, and out-of-range numbers are rejected with the offending key path. Legacy keys (`auto`, `strategy`, `weight`, `fallback`, `fallback_chain`, and `provider`/`backend` at the top level or inside an entry) are rejected with a per-key migration hint (e.g. `auto` maps to `enableNative`), so stale configs fail loudly at startup.
 
 ## Configuration
 
@@ -114,13 +114,13 @@ The native entry inherits `model.baseUrl` from `ExtensionContext.model`, so any 
 While a search is in flight, the TUI shows a single collapsed line for the provider currently being tried — no step counter, just the active source:
 
 ```
-Searching "q" via duckduckgo-html/backup (max 10)
+Searching "q" via duckduckgo-html/backup
 ```
 
 When expanded, a three-state route line is appended so you can see which sources already ran, which one is running, and which are still pending. Each entry is `provider/id` followed by its state: `failed`, the result count, `searching` (the entry at the current attempt index), or `pending`:
 
 ```
-Searching "q" via duckduckgo-html/backup (max 10)
+Searching "q" via duckduckgo-html/backup
 route exa/primary:failed -> duckduckgo-html/backup:searching -> brave/extra:pending
 ```
 
@@ -137,7 +137,7 @@ Supported providers:
 - `brave`: Brave Search API. Requires `apiKey`.
 - `serper`: Serper Google search API. Requires `apiKey`.
 - `google-cse`: Google Custom Search JSON API. Requires `apiKey` and `searchEngineId`.
-- `z-ai`: Z.ai web search endpoint. Requires `apiKey`.
+- `z-ai`: Z.ai web search endpoint. Requires `apiKey`. Config entries may use the `zai` spelling; it is normalized to `z-ai` on load (matching native routing).
 - `zai-coding-cn`: GLM Coding Plan 联网搜索 MCP (`web-search-prime` streamable HTTP server). Consumes the plan's bundled MCP quota instead of pay-per-use billing; requires a Coding Plan `apiKey` when configured explicitly. The default baseUrl is `https://open.bigmodel.cn/api/mcp/web_search_prime/mcp`; set `baseUrl` to `https://api.z.ai/api/mcp/web_search_prime/mcp` for the global host.
 - `openai`: OpenAI Responses API hosted `web_search` tool. Requires `apiKey`.
 - `codex`: OpenAI Responses API hosted `web_search` tool for explicitly configured API keys; this is separate from `openai-codex` OAuth auto-routing.
@@ -148,7 +148,7 @@ Supported providers:
 - `minimax-cn` / `minimax`: MiniMax web search (CN and global hosts). Dispatches by API key prefix: `sk-cp-…` posts to the bundled `/v1/coding_plan/search` REST endpoint (Token Plan bundled quota); any other key (typically `sk-api-…` for pay-as-you-go) hits the Anthropic-compatible `/anthropic/v1/messages` endpoint with the `web_search_20250305` server tool. Requires `apiKey`. The default baseUrl is `https://api.minimaxi.com/anthropic/v1/messages` for `minimax-cn` and `https://api.minimax.io/anthropic/v1/messages` for `minimax`; only the origin is used to pick the regional host.
 - `deepseek`: DeepSeek's Anthropic-compatible endpoint with the server-side `web_search_20260209` tool. The key is resolved automatically from the active DeepSeek model, so no config entry is required.
 
-Provider-specific optional fields include `id`, `baseUrl`, `headers`, `model`, `maxResults`, `priority`, `searchContextSize`, `codexMode`, `allowedDomains`, `blockedDomains`, and `userLocation` where supported. `maxResults` (integer 1-50, default 10) caps results per entry: providers with a count parameter pass it upstream and clamp to their own API limit, others slice results locally; attempt progress reports the effective cap only for providers that take one. `baseUrl` is supported for every provider and must be a public HTTPS URL without embedded credentials; self-hosted providers (`searxng`) may use plain HTTP and private hosts instead. `headers` is a string map merged into every request of that entry — use it for reverse-proxy authentication in front of self-hosted instances; it is stored in plaintext like `apiKey`.
+Provider-specific optional fields include `id`, `baseUrl`, `headers`, `model`, `maxResults`, `priority`, `searchContextSize`, `codexMode`, `allowedDomains`, `blockedDomains`, and `userLocation` where supported. `maxResults` (integer 1-50, default 10) caps results per entry: providers with a count parameter pass it upstream and clamp to their own API limit, others slice results locally; attempt progress reports the effective cap only for providers that take one, and the implicit native route has no entry cap and is sliced at the default 10. `priority` and `timeoutMs` are integer-only (`timeoutMs` at least 1). Headers must use valid HTTP header names with non-blank values. `baseUrl` is supported for every provider and must be a public HTTPS URL without embedded credentials; self-hosted providers (`searxng`) may use plain HTTP and private hosts instead. `headers` is a string map merged into every request of that entry — use it for reverse-proxy authentication in front of self-hosted instances; it is stored in plaintext like `apiKey`.
 
 Tool text and TUI output include the selected provider entry and fallback attempts so the agent can see which provider produced the result.
 

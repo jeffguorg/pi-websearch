@@ -56,11 +56,14 @@ const EXTERNAL_PROVIDERS = new Set<string>();
 /** Native auto-route bindings contributed by external scripts. */
 const EXTERNAL_BINDINGS: SearchProviderExtension[] = [];
 
-/** Per-provider API cap for result counts, undefined when the provider takes no count parameter. */
-export function providerMaxResultsLimit(provider: string): number | undefined {
-	return PROVIDER_MODULES[provider]?.maxResultsLimit;
+/** Per-provider API cap for result counts, undefined when the wire path this
+ *  config would use takes no count parameter. */
+export function providerMaxResultsLimit(config: SearchProviderConfig | SearchRoute): number | undefined {
+	const adapter = "adapter" in config ? config.adapter : config.provider;
+	const limit = PROVIDER_MODULES[adapter]?.maxResultsLimit;
+	if (limit === undefined) return undefined;
+	return typeof limit === "function" ? limit(config) : limit;
 }
-
 export function isKnownProvider(provider: string): boolean {
 	return provider in PROVIDER_MODULES;
 }
@@ -203,7 +206,9 @@ export async function executeDirectProviderSearch(
 	if (!Array.isArray(results) || !results.every(isSearchResultItem)) {
 		throw new Error(`Search adapter ${adapter} returned invalid results`);
 	}
-	return results.slice(0, Math.max(1, maxResults));
+	// No client-side slice here: performProviderSearch owns slicing and reports
+	// truncated from the full result list, so early caps would hide overflow.
+	return results;
 }
 
 export async function loadExternalProviderExtensions(directory: string): Promise<string[]> {

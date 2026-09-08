@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Ajv, type ErrorObject } from "ajv";
 import { isAllowedConfiguredBaseUrl } from "./provider-endpoints.js";
+import { DEFAULT_MAX_RESULTS } from "./providers/shared.js";
 import { isExternalProvider, isRegisteredProvider } from "./providers.js";
 import type {
 	CodexSearchMode,
@@ -23,7 +24,7 @@ const CODEX_MODES: readonly CodexSearchMode[] = ["cached", "live"];
 const DEFAULT_FREE_CONFIG: WebsearchConfig = {
 	appendProvidersAsFallback: true,
 	enableNative: true,
-	providers: [{ id: "default", provider: "duckduckgo-html", maxResults: 10 }],
+	providers: [{ id: "default", provider: "duckduckgo-html", maxResults: DEFAULT_MAX_RESULTS }],
 };
 
 /** Structural schema for websearch config files. Semantic checks (credentials,
@@ -49,7 +50,11 @@ const providerEntrySchema = {
 		optional: { type: "boolean" },
 		allowedDomains: STRING_ARRAY_FIELD,
 		blockedDomains: STRING_ARRAY_FIELD,
-		headers: { type: "object", additionalProperties: { type: "string", minLength: 1 } },
+		headers: {
+			type: "object",
+			propertyNames: { pattern: "^[!#$%&'*+\\-.^_`|~0-9A-Za-z]+$" },
+			additionalProperties: { type: "string", pattern: "\\S" },
+		},
 		userLocation: {
 			type: "object",
 			additionalProperties: false,
@@ -69,6 +74,7 @@ const providerEntrySchema = {
 const websearchConfigSchema = {
 	type: "object",
 	additionalProperties: false,
+	required: ["providers"],
 	properties: {
 		appendProvidersAsFallback: { type: "boolean" },
 		enableNative: { type: "boolean" },
@@ -76,11 +82,22 @@ const websearchConfigSchema = {
 	},
 };
 
-/** Config keys from pre-0.3 releases. Rejected with a migration hint instead of
- * being silently ignored, so stale configs fail loudly at startup. */
+/** Config keys from pre-0.3 releases. Rejected with a per-key migration hint
+ * instead of being silently ignored, so stale configs fail loudly at startup. */
 const LEGACY_ROOT_KEYS = new Set(["auto", "strategy", "weight", "fallback", "fallback_chain", "provider", "backend"]);
 const LEGACY_ENTRY_KEYS = new Set(["backend", "weight"]);
+const LEGACY_KEY_HINTS: Record<string, string> = {
+	auto: `use "enableNative" with the same value`,
+	backend: `rename it to "provider"`,
+	fallback: `use "appendProvidersAsFallback" with the same value`,
+	fallback_chain: `merge its entries into "providers"`,
+	provider: `wrap the entry in a "providers" array`,
+	strategy: `remove it; routes run in priority order`,
+	weight: `remove it; routes run in priority order`,
+};
 
+/** Config-side aliases, kept in sync with the names native matching accepts. */
+const PROVIDER_ALIASES: Readonly<Record<string, string>> = { zai: "z-ai" };
 const ajv = new Ajv({ allErrors: true });
 const validateWebsearchSchema = ajv.compile(websearchConfigSchema);
 
@@ -88,8 +105,13 @@ function formatSchemaError(error: ErrorObject): string {
 	const where = error.instancePath === "" ? "config" : error.instancePath.slice(1).replaceAll("/", ".");
 	if (error.keyword === "additionalProperties") {
 		const key = String(error.params["additionalProperty"]);
-		const legacy = error.instancePath === "" ? LEGACY_ROOT_KEYS : LEGACY_ENTRY_KEYS;
-		if (legacy.has(key)) return `${where}: legacy key "${key}" is no longer supported; remove it`;
+		// backend/weight only ever meant something on a providers[] entry; the same
+		// words nested deeper (e.g. inside userLocation) are just unknown keys.
+		const isEntryPath = /^\/providers\/\d+$/.test(error.instancePath);
+		const legacySet = error.instancePath === "" ? LEGACY_ROOT_KEYS : isEntryPath ? LEGACY_ENTRY_KEYS : null;
+		if (legacySet?.has(key) === true) {
+			return `${where}: legacy key "${key}" is no longer supported; ${LEGACY_KEY_HINTS[key]}`;
+		}
 		return `${where}: unknown key "${key}" is not allowed`;
 	}
 	return `${where}: ${error.message ?? "failed schema validation"}`;
@@ -185,6 +207,8 @@ function parseJsonObject(content: string): JsonObject | null {
 }
 
 function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
+	// File loads are gated by the ajv schema above; these guards remain as the
+	// type narrowing for direct callers of this private parser.
 	const stringFields = ["id", "apiKey", "baseUrl", "searchEngineId", "model"];
 	const numberFields = ["maxResults", "timeoutMs", "priority"];
 	if (
@@ -200,8 +224,10 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 	) {
 		return null;
 	}
-	const provider = optionalProvider(raw["provider"]);
-	if (!provider) return null;
+	const rawProvider = optionalProvider(raw["provider"]);
+	if (!rawProvider) return null;
+	// Config-side alias normalization, kept in sync with native matching.
+	const provider = PROVIDER_ALIASES[rawProvider] ?? rawProvider;
 
 	const config: SearchProviderEntry = { provider };
 	const id = optionalString(raw["id"]);
@@ -227,7 +253,7 @@ function providerEntryFromObject(raw: JsonObject): SearchProviderEntry | null {
 	if (apiKey) config.apiKey = apiKey;
 	if (baseUrl) config.baseUrl = baseUrl;
 	if (searchEngineId) config.searchEngineId = searchEngineId;
-	if (maxResults) config.maxResults = maxResults;
+	if (maxResults !== undefined) config.maxResults = maxResults;
 	if (model) config.model = model;
 	if (codexMode) config.codexMode = codexMode;
 	if (searchContextSize) config.searchContextSize = searchContextSize;

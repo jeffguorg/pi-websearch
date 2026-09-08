@@ -1,6 +1,6 @@
 import type { JsonValue, SearchResultItem } from "../types.js";
 import type { BuildContext, ProviderModule } from "./shared.js";
-import { bearerToken, clamp, getArray, getObject, getString, result } from "./shared.js";
+import { bearerToken, getArray, getObject, getString, result } from "./shared.js";
 
 const TOKEN_PLAN_KEY_PREFIX = "sk-cp-";
 const PAYGO_KEY_PREFIX = "sk-api-";
@@ -52,7 +52,6 @@ async function runCodingPlanSearch(
 	apiKey: string,
 	apiHost: string,
 	query: string,
-	maxResults: number,
 	signal: AbortSignal,
 ): Promise<SearchResultItem[]> {
 	const timeoutController = new AbortController();
@@ -82,14 +81,14 @@ async function runCodingPlanSearch(
 			);
 		}
 		const payload = JSON.parse(await readBoundedBody(response)) as unknown;
-		return normalizeCodingPlanPayload(payload, maxResults);
+		return normalizeCodingPlanPayload(payload);
 	} finally {
 		signal.removeEventListener("abort", onOuterAbort);
 		clearTimeout(timeoutHandle);
 	}
 }
 
-function normalizeCodingPlanPayload(payload: unknown, maxResults: number): SearchResultItem[] {
+function normalizeCodingPlanPayload(payload: unknown): SearchResultItem[] {
 	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
 		throw new Error("MiniMax coding-plan search returned an unexpected payload");
 	}
@@ -111,7 +110,6 @@ function normalizeCodingPlanPayload(payload: unknown, maxResults: number): Searc
 		const publishedAt = getString(item["date"]);
 		const built = result(title, url, snippet);
 		if (built) items.push(publishedAt ? { ...built, publishedAt } : built);
-		if (items.length >= clamp(maxResults, 1, 50)) return items;
 	}
 	return items;
 }
@@ -127,7 +125,7 @@ function buildWebSearchTool(allowedDomains: string[] | undefined, blockedDomains
  *  `web_search_20250305` tool. This is the only documented search path for
  *  paygo keys (Server Tools are Anthropic Messages API only, in Beta). */
 async function runPaygoSearch(ctx: BuildContext, signal: AbortSignal): Promise<SearchResultItem[]> {
-	const { config, request, maxResults, allowedDomains, blockedDomains } = ctx;
+	const { config, request, allowedDomains, blockedDomains } = ctx;
 	const apiKey = resolveApiKey(config);
 	if (!apiKey) throw new Error("minimax-cn requires an apiKey for pay-as-you-go search");
 
@@ -170,7 +168,7 @@ async function runPaygoSearch(ctx: BuildContext, signal: AbortSignal): Promise<S
 		}
 		const bodyText = await readBoundedBody(response);
 		const payload = JSON.parse(bodyText) as unknown;
-		return normalizeAnthropicPayload(payload, maxResults);
+		return normalizeAnthropicPayload(payload);
 	} finally {
 		signal.removeEventListener("abort", onOuterAbort);
 		clearTimeout(timeoutHandle);
@@ -198,7 +196,7 @@ async function safeReadErrorBody(response: Response): Promise<string | undefined
 	}
 }
 
-function normalizeAnthropicPayload(payload: unknown, maxResults: number): SearchResultItem[] {
+function normalizeAnthropicPayload(payload: unknown): SearchResultItem[] {
 	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
 		throw new Error("MiniMax pay-as-you-go search returned an unexpected payload");
 	}
@@ -223,19 +221,17 @@ function normalizeAnthropicPayload(payload: unknown, maxResults: number): Search
 			if (!title || !url) continue;
 			const snippet = getString(searchItem["snippet"]) ?? fallbackText;
 			items.push(result(title, url, snippet) ?? { title, url });
-			if (items.length >= maxResults) return items;
 		}
 	}
 	return items;
 }
 
 export const minimaxCnProvider: ProviderModule = {
-	maxResultsLimit: 50,
 	async search(ctx: BuildContext, signal: AbortSignal): Promise<SearchResultItem[]> {
 		const apiKey = resolveApiKey(ctx.config);
 		if (!apiKey) throw new Error("minimax-cn requires an apiKey");
 		if (isTokenPlanKey(apiKey)) {
-			return runCodingPlanSearch(apiKey, apiHostFor(ctx.config), ctx.request.query, ctx.maxResults, signal);
+			return runCodingPlanSearch(apiKey, apiHostFor(ctx.config), ctx.request.query, signal);
 		}
 		// sk-api- (or any non-sk-cp- MiniMax key) falls through to the
 		// pay-as-you-go Anthropic-compatible endpoint with the server-side

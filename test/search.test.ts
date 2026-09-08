@@ -522,6 +522,9 @@ describe("performSearch", () => {
 			providers: [
 				{ id: "capped", provider: "exa", baseUrl: "https://gateway.example.com/exa", maxResults: 30 },
 				{ id: "default", provider: "exa", baseUrl: "https://gateway.example.com/exa2" },
+				{ id: "chat", provider: "perplexity", model: "sonar", apiKey: "pplx-test" },
+				{ id: "query", provider: "perplexity", apiKey: "pplx-test" },
+				{ id: "plan", provider: "minimax-cn", apiKey: "sk-cp-test" },
 				{ id: "no-param", provider: "duckduckgo-html" },
 			],
 		};
@@ -537,13 +540,50 @@ describe("performSearch", () => {
 		);
 
 		// then
-		expect(listenerCalls).toHaveLength(3);
+		expect(listenerCalls).toHaveLength(6);
 		// exa caps at 20: configured 30 is clamped to the provider limit
 		expect(listenerCalls[0]).toEqual({ label: "exa/capped", maxResults: 20 });
 		// exa without configuration falls back to the default 10
 		expect(listenerCalls[1]).toEqual({ label: "exa/default", maxResults: 10 });
+		// perplexity caps only its query API: with a model the chat path sends no count
+		expect(listenerCalls[2]).toEqual({ label: "perplexity/chat", maxResults: undefined });
+		// perplexity query API takes max_results, capped at 20
+		expect(listenerCalls[3]).toEqual({ label: "perplexity/query", maxResults: 10 });
+		// minimax-cn sends no count parameter on either path
+		expect(listenerCalls[4]).toEqual({ label: "minimax-cn/plan", maxResults: undefined });
 		// duckduckgo-html takes no count parameter: no cap is reported
-		expect(listenerCalls[2]).toEqual({ label: "duckduckgo-html/no-param", maxResults: undefined });
+		expect(listenerCalls[5]).toEqual({ label: "duckduckgo-html/no-param", maxResults: undefined });
+	});
+
+	it("#given a direct provider returning more than maxResults #when searching #then slices and reports truncated", async () => {
+		// given
+		const organic = [1, 2, 3, 4].map((index) => ({
+			title: `Hit ${index}`,
+			link: `https://cp.example.com/${index}`,
+			snippet: "row",
+		}));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ base_resp: { status_code: 0 }, organic }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+			),
+		);
+		const config: WebsearchConfig = {
+			appendProvidersAsFallback: true,
+			enableNative: false,
+			providers: [{ id: "plan", provider: "minimax-cn", apiKey: "sk-cp-test", maxResults: 2 }],
+		};
+
+		// when
+		const details = await performSearch(config, { query: "overflow" });
+
+		// then
+		expect(details.error).toBeUndefined();
+		expect(details.results).toHaveLength(2);
+		expect(details.truncated).toBe(true);
 	});
 
 	it("#given a native adapter throws and fallback is disabled #when searching #then does not use configured routes", async () => {

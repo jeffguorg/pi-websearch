@@ -21,9 +21,10 @@ export interface BuildContext {
 }
 
 export interface ProviderModule {
-	/** Largest result count the upstream API accepts per request. Undefined when
-	 * the provider takes no result-count parameter; client-side slicing still applies. */
-	maxResultsLimit?: number;
+	/** Largest result count the upstream API accepts per request, or a predicate
+	 *  over the entry config when only some request paths take a count parameter.
+	 *  Undefined when no wire path takes one; client-side slicing still applies. */
+	maxResultsLimit?: number | ((config: SearchProviderConfig) => number | undefined);
 	buildRequest?(ctx: BuildContext): BuiltSearchRequest;
 	parseResponseBody?(bodyText: string): JsonObject;
 	normalizeResponse?(data: JsonObject): SearchResultItem[];

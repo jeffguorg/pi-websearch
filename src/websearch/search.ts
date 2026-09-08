@@ -282,10 +282,9 @@ export type SearchAttemptListener = (
 ) => void;
 
 /** Effective per-route result cap the current provider honours, undefined when
- * the provider takes no result-count parameter. */
+ * the wire path takes no result-count parameter. */
 function effectiveMaxResults(provider: SearchProviderEntry | SearchRoute): number | undefined {
-	const adapter = "adapter" in provider ? provider.adapter : provider.provider;
-	const limit = providerMaxResultsLimit(adapter);
+	const limit = providerMaxResultsLimit(provider);
 	if (limit === undefined) return undefined;
 	return Math.min(provider.maxResults ?? DEFAULT_MAX_RESULTS, limit);
 }

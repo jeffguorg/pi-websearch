@@ -27,7 +27,9 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	};
 
 	function providerList(config: WebsearchConfig): string {
-		return sortedProviders(config.providers).map(providerEntryLabel).join(", ");
+		// Mirror the route chain: with fallback off only the first provider is ever attempted.
+		const routes = config.appendProvidersAsFallback ? config.providers : config.providers.slice(0, 1);
+		return sortedProviders(routes).map(providerEntryLabel).join(", ");
 	}
 
 	function clearUi(ctx: ExtensionContext): void {
