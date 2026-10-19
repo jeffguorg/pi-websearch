@@ -166,15 +166,15 @@ describe("renderSearchResult", () => {
 });
 
 describe("renderSearchResult native entry label", () => {
-	it("#given finished native details #when rendering #then shows provider/native", () => {
+	it("#given finished native details #when rendering #then shows provider/subrequest", () => {
 		const details: SearchDetails = {
 			provider: "openai",
-			entryId: "native",
+			entryId: "subrequest",
 			query: "native label",
 			results: [{ title: "Native", url: "https://example.com/native", snippet: "snip" }],
 			durationMs: 7,
 			truncated: false,
-			attempts: [{ provider: "openai", entryId: "native", durationMs: 7, resultsCount: 1 }],
+			attempts: [{ provider: "openai", entryId: "subrequest", durationMs: 7, resultsCount: 1 }],
 		};
 
 		const collapsed = renderSearchResult({ content: [{ type: "text", text: "ok" }], details }, {}, theme)
@@ -188,8 +188,8 @@ describe("renderSearchResult native entry label", () => {
 			.render(120)
 			.join("\n");
 
-		expect(collapsed).toContain("via openai/native");
-		expect(expanded).toContain("route openai/native:1");
+		expect(collapsed).toContain("via openai/subrequest");
+		expect(expanded).toContain("route openai/subrequest:1");
 		expect(expanded).not.toMatch(/\((?:priority|round-robin|fill-first)\)/);
 		expect(collapsed).not.toMatch(/\((?:priority|round-robin|fill-first)\)/);
 	});

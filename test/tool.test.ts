@@ -127,8 +127,8 @@ describe("web_search tool definition", () => {
 		const details = result.details as SearchDetails;
 		expect(requestedUrls).toEqual(["https://gateway.example.com/v1/responses"]);
 		expect(details.provider).toBe("openai");
-		expect(details.entryId).toBe("native");
-		expect(details.attempts?.map((attempt) => attempt.entryId)).toEqual(["native"]);
+		expect(details.entryId).toBe("subrequest");
+		expect(details.attempts?.map((attempt) => attempt.entryId)).toEqual(["subrequest"]);
 	});
 
 	it("#given native failure and fallback enabled #when executing #then continues to the configured chain", async () => {
@@ -156,7 +156,7 @@ describe("web_search tool definition", () => {
 		const details = result.details as SearchDetails;
 		expect(requestedUrls).toEqual(["https://gateway.example.com/v1/responses", "https://gateway.example.com/exa"]);
 		expect(details.entryId).toBe("manual");
-		expect(details.attempts?.map((attempt) => attempt.entryId)).toEqual(["native", "manual"]);
+		expect(details.attempts?.map((attempt) => attempt.entryId)).toEqual(["subrequest", "manual"]);
 	});
 
 	it("#given native empty result and retry_on_empty #when executing #then continues without marking native failed", async () => {
@@ -184,7 +184,7 @@ describe("web_search tool definition", () => {
 		const details = result.details as SearchDetails;
 		expect(requestedUrls).toEqual(["https://gateway.example.com/v1/responses", "https://gateway.example.com/exa"]);
 		expect(details.entryId).toBe("manual");
-		expect(details.attempts?.[0]).toMatchObject({ entryId: "native", resultsCount: 0 });
+		expect(details.attempts?.[0]).toMatchObject({ entryId: "subrequest", resultsCount: 0 });
 		expect(details.attempts?.[0]?.error).toBeUndefined();
 	});
 
@@ -299,7 +299,7 @@ describe("web_search tool definition", () => {
 		const details = result.details as SearchDetails;
 		expect(requestedUrls).toEqual(["https://chatgpt.com/backend-api/codex/responses"]);
 		expect(details.provider).toBe("openai-codex");
-		expect(details.entryId).toBe("native");
+		expect(details.entryId).toBe("subrequest");
 		expect(details.results).toEqual([{ title: "https://codex.example.com", url: "https://codex.example.com" }]);
 	});
 
@@ -336,7 +336,7 @@ describe("web_search tool definition", () => {
 
 		// then
 		const details = result.details as SearchDetails;
-		expect(details.entryId).toBe("native");
+		expect(details.entryId).toBe("subrequest");
 		expect(details.results.map((item) => item.url)).toEqual([
 			"https://one.example.com",
 			"https://two.example.com",
@@ -431,9 +431,9 @@ describe("web_search tool definition", () => {
 		);
 
 		const first = updates[0]?.details as SearchProgressDetails | undefined;
-		expect(first?.providerLabels).toEqual(["kimi-coding/native", "exa/manual"]);
+		expect(first?.providerLabels).toEqual(["kimi-coding/api", "exa/manual"]);
 		const progress = updates.find((u) => (u.details as SearchProgressDetails | undefined)?.currentProvider);
-		expect(progress?.details).toMatchObject({ currentProvider: "kimi-coding/native" });
+		expect(progress?.details).toMatchObject({ currentProvider: "kimi-coding/api" });
 	});
 
 	it("#given fallback disabled and native route #when emitting progress #then advertises only the first route", async () => {
@@ -456,8 +456,8 @@ describe("web_search tool definition", () => {
 		);
 
 		const first = updates[0]?.details as SearchProgressDetails | undefined;
-		expect(first?.providerLabels).toEqual(["kimi-coding/native"]);
-		expect(updates[0]?.content[0]?.text).toBe('Searching "exclusive progress" via kimi-coding/native');
+		expect(first?.providerLabels).toEqual(["kimi-coding/api"]);
+		expect(updates[0]?.content[0]?.text).toBe('Searching "exclusive progress" via kimi-coding/api');
 	});
 
 	it("#given fallback disabled and no native route #when emitting progress #then advertises only the first configured provider", async () => {

@@ -1,4 +1,5 @@
 import { isAllowedNativeProviderBaseUrl } from "./provider-endpoints.js";
+import { isTokenPlanKey } from "./providers/minimax-cn.js";
 import { bearerToken } from "./providers/shared.js";
 import { getExternalBindings } from "./providers.js";
 import type { JsonObject, SearchRoute } from "./types.js";
@@ -23,48 +24,71 @@ export interface NativeModelRegistry {
 export interface NativeProviderMapping {
 	adapter: string;
 	resource: string;
+	/** Short method identifier used in routing labels, e.g. "subrequest", "api", "mcp". */
+	id: string;
 }
 
 function directNativeMapping(model: NativeModelInfo): NativeProviderMapping | null {
 	if (model.provider === "openai-codex" && model.api === "openai-codex-responses") {
-		return { adapter: "openai-codex-responses", resource: "codex/responses" };
+		return { adapter: "openai-codex-responses", resource: "codex/responses", id: "subrequest" };
 	}
 
+	// Chat/response API subrequests with a server-side web_search tool.
+	const subrequest = (adapter: string, resource: string): NativeProviderMapping => ({
+		adapter,
+		resource,
+		id: "subrequest",
+	});
+
+	// Dedicated search endpoints that do not ride the chat protocol.
+	const api = (adapter: string, resource: string): NativeProviderMapping => ({
+		adapter,
+		resource,
+		id: "api",
+	});
+
+	// Remote MCP server.
+	const mcp = (adapter: string, resource: string): NativeProviderMapping => ({
+		adapter,
+		resource,
+		id: "mcp",
+	});
+
 	if (model.provider === "openai" && /^gpt-(4o|4\.1|5)/.test(model.id) && !model.id.includes("codex")) {
-		return { adapter: "openai", resource: "responses" };
+		return subrequest("openai", "responses");
 	}
 
 	if (model.provider === "anthropic" && /^claude-/.test(model.id)) {
-		return { adapter: "anthropic", resource: "messages" };
+		return subrequest("anthropic", "messages");
 	}
 
 	if ((model.provider === "xai" || model.provider === "x-ai") && /^grok-/.test(model.id)) {
-		return { adapter: "xai", resource: "responses" };
+		return subrequest("xai", "responses");
 	}
 
 	if (model.provider === "perplexity" && /^sonar/.test(model.id)) {
-		return { adapter: "perplexity", resource: "chat/completions" };
+		return subrequest("perplexity", "chat/completions");
 	}
 
 	if ((model.provider === "z-ai" || model.provider === "zai") && /^glm-/.test(model.id)) {
-		return { adapter: "z-ai", resource: "chat/completions" };
+		return subrequest("z-ai", "chat/completions");
 	}
 
 	if (model.provider === "kimi-coding") {
-		return { adapter: "kimi", resource: "search" };
+		return api("kimi", "search");
 	}
 
 	// DeepSeek's Search API is a standalone endpoint billed per request; it
 	// does not ride the chat protocol, so any DeepSeek model qualifies.
 	if (model.provider === "deepseek") {
-		return { adapter: "deepseek", resource: "tools/search" };
+		return api("deepseek", "tools/search");
 	}
 
 	// All Zhipu Coding Plan models share the same remote web-search-prime MCP
 	// server; the adapter ignores the chat baseUrl and always targets the MCP
 	// endpoint, consuming the plan's bundled MCP quota.
 	if (model.provider === "zai-coding-cn" || model.provider === "zai-coding") {
-		return { adapter: "zai-coding-cn", resource: "mcp/web_search_prime/mcp" };
+		return mcp("zai-coding-cn", "mcp/web_search_prime/mcp");
 	}
 
 	// All MiniMax models share the same adapter; the provider module dispatches
@@ -73,7 +97,7 @@ function directNativeMapping(model: NativeModelInfo): NativeProviderMapping | nu
 	// regional host from the model's baseUrl (minimax-cn → api.minimaxi.com,
 	// minimax → api.minimax.io).
 	if (model.provider === "minimax-cn" || model.provider === "minimax") {
-		return { adapter: "minimax-cn", resource: "messages" };
+		return subrequest("minimax-cn", "messages");
 	}
 
 	return null;
@@ -87,7 +111,7 @@ export function nativeMapping(model: NativeModelInfo): NativeProviderMapping | n
 		const effectiveId = model.id.slice(slashIndex + 1);
 		if (effectiveProvider === "openrouter") return null;
 		const upstream = directNativeMapping({ ...model, provider: effectiveProvider, id: effectiveId });
-		return upstream ? { adapter: "openrouter", resource: "chat/completions" } : null;
+		return upstream ? { adapter: "openrouter", resource: "chat/completions", id: "subrequest" } : null;
 	}
 
 	const direct = directNativeMapping(model);
@@ -98,7 +122,7 @@ export function nativeMapping(model: NativeModelInfo): NativeProviderMapping | n
 	for (const binding of getExternalBindings()) {
 		try {
 			if (binding.provider === model.provider && binding.match?.(model) && binding.resource) {
-				return { adapter: binding.provider, resource: binding.resource };
+				return { adapter: binding.provider, resource: binding.resource, id: routeIdFromResource(binding.resource) };
 			}
 		} catch {
 			// A broken optional binding must not disable configured fallback routes.
@@ -106,6 +130,12 @@ export function nativeMapping(model: NativeModelInfo): NativeProviderMapping | n
 	}
 
 	return null;
+}
+
+function routeIdFromResource(resource: string): string {
+	if (resource === "tools/search" || resource === "search") return "api";
+	if (resource.startsWith("mcp/")) return "mcp";
+	return "subrequest";
 }
 
 function buildEndpointUrl(baseUrl: string, resource: string): string {
@@ -175,7 +205,6 @@ export type NativeRouteResolution =
 export async function resolveNativeEntry(
 	model: NativeModelInfo | undefined,
 	modelRegistry: NativeModelRegistry | undefined,
-	id = "native",
 ): Promise<NativeRouteResolution> {
 	if (!model) return { kind: "unmatched" };
 
@@ -236,11 +265,13 @@ export async function resolveNativeEntry(
 	}
 	const resolvedApiKey = codexApiKey ?? deepseekApiKey ?? auth.apiKey;
 	const resolvedHeaders = mapping.adapter === "openai-codex-responses" ? undefined : auth.headers;
+	const minimaxApiKey = mapping.adapter === "minimax-cn" ? resolvedApiKey : undefined;
+	const routeId = minimaxApiKey && isTokenPlanKey(minimaxApiKey) ? "api" : mapping.id;
 
 	return {
 		kind: "ready",
 		route: {
-			id,
+			id: routeId,
 			provider: model.provider,
 			adapter: mapping.adapter,
 			...(resolvedApiKey ? { apiKey: resolvedApiKey } : {}),
@@ -256,8 +287,7 @@ export async function resolveNativeEntry(
 export async function buildNativeEntry(
 	model: NativeModelInfo | undefined,
 	modelRegistry: NativeModelRegistry | undefined,
-	id = "native",
 ): Promise<SearchRoute | null> {
-	const resolution = await resolveNativeEntry(model, modelRegistry, id);
+	const resolution = await resolveNativeEntry(model, modelRegistry);
 	return resolution.kind === "ready" ? resolution.route : null;
 }

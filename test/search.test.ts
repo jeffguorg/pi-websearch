@@ -9,7 +9,7 @@ function jsonResponse(payload: object, status = 200): Response {
 
 function nativeRoute(): SearchRoute {
 	return {
-		id: "native",
+		id: "subrequest",
 		provider: "openai",
 		adapter: "openai",
 		apiKey: "native-test",
@@ -430,7 +430,7 @@ describe("performSearch", () => {
 			enableNative: true,
 			providers: [
 				{
-					id: "native",
+					id: "subrequest",
 					provider: "anthropic",
 					apiKey: "anthropic-test",
 					baseUrl: "https://gateway.example.com/v1/messages",
@@ -449,7 +449,7 @@ describe("performSearch", () => {
 		const details = await performSearch(config, { query: "test" });
 
 		// then
-		expect(details.error).toContain("anthropic/native");
+		expect(details.error).toContain("anthropic/subrequest");
 		expect(details.error).toContain("HTTP 400");
 		expect(details.error).toContain("model not supported");
 		expect(details.error).toContain("openai/openai-search");
@@ -602,7 +602,7 @@ describe("performSearch", () => {
 		const details = await performSearch(config, { query: "adapter fallback" }, undefined, undefined, brokenNative);
 
 		expect(requestedUrls).toEqual([]);
-		expect(details.entryId).toBe("native");
+		expect(details.entryId).toBe("subrequest");
 		expect(details.attempts?.[0]?.error).toBe("Unknown search adapter: missing-adapter");
 	});
 
@@ -621,7 +621,9 @@ describe("performSearch", () => {
 		const details = await performSearch(config, { query: "no fallback" }, undefined, undefined, nativeRoute());
 
 		expect(requestedUrls).toEqual(["https://gateway.example.com/native"]);
-		expect(details.attempts?.map((attempt) => `${attempt.provider}/${attempt.entryId}`)).toEqual(["openai/native"]);
+		expect(details.attempts?.map((attempt) => `${attempt.provider}/${attempt.entryId}`)).toEqual([
+			"openai/subrequest",
+		]);
 	});
 
 	it("#given native failure and fallback enabled #when searching #then the configured chain runs", async () => {
@@ -644,24 +646,24 @@ describe("performSearch", () => {
 
 		expect(requestedUrls).toEqual(["https://gateway.example.com/native", "https://gateway.example.com/manual"]);
 		expect(details.entryId).toBe("manual");
-		expect(details.attempts?.map((attempt) => attempt.entryId)).toEqual(["native", "manual"]);
+		expect(details.attempts?.map((attempt) => attempt.entryId)).toEqual(["subrequest", "manual"]);
 	});
 });
 
 describe("formatSearchText native entry label", () => {
-	it("#given active native details #when formatting #then reports provider/native", () => {
+	it("#given active native details #when formatting #then reports provider/subrequest", () => {
 		const details: SearchDetails = {
 			provider: "openai",
-			entryId: "native",
+			entryId: "subrequest",
 			query: "native label",
 			results: [{ title: "Native", url: "https://example.com/native", snippet: "snip" }],
 			durationMs: 7,
 			truncated: false,
-			attempts: [{ provider: "openai", entryId: "native", durationMs: 7, resultsCount: 1 }],
+			attempts: [{ provider: "openai", entryId: "subrequest", durationMs: 7, resultsCount: 1 }],
 		};
 
 		const formatted = formatSearchText(details);
-		expect(formatted).toContain("via openai/native");
+		expect(formatted).toContain("via openai/subrequest");
 		expect(formatted).not.toContain("(priority)");
 	});
 });

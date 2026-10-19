@@ -267,7 +267,7 @@ describe("buildSearchRequest", () => {
 	it("#given native OpenAI Codex route #when building request #then uses OAuth SSE Responses protocol", () => {
 		const token = codexToken();
 		const route: SearchRoute = {
-			id: "native",
+			id: "subrequest",
 			provider: "openai-codex",
 			adapter: "openai-codex-responses",
 			apiKey: token,
@@ -502,7 +502,7 @@ describe("buildSearchRequest", () => {
 
 	it("#given active OpenRouter alias #when building request #then uses OpenRouter web plugin", () => {
 		const route: SearchRoute = {
-			id: "native",
+			id: "subrequest",
 			provider: "openrouter",
 			adapter: "openrouter",
 			apiKey: "openrouter-test",
@@ -531,7 +531,7 @@ describe("buildSearchRequest", () => {
 
 	it("#given native registry headers #when building request #then resolved headers replace adapter authentication", () => {
 		const authorizationRoute: SearchRoute = {
-			id: "native",
+			id: "subrequest",
 			provider: "openai",
 			adapter: "openai",
 			baseUrl: "https://gateway.example.com/v1/responses",
@@ -1167,7 +1167,7 @@ describe("minimax-cn direct adapter", () => {
 
 		// given: coding-plan branch with only an Authorization header (native headers-only route)
 		const bearerOnly: SearchRoute = {
-			id: "native",
+			id: "api",
 			provider: "minimax-cn",
 			adapter: "minimax-cn",
 			headers: { Authorization: "Bearer sk-cp-from-header" },
@@ -1185,7 +1185,7 @@ describe("minimax-cn direct adapter", () => {
 
 		// given: paygo branch with only an x-api-key header
 		const paygoHeaderOnly: SearchRoute = {
-			id: "native",
+			id: "subrequest",
 			provider: "minimax-cn",
 			adapter: "minimax-cn",
 			headers: { "x-api-key": "sk-api-from-header" },

@@ -35,46 +35,68 @@ describe("active native route", () => {
 			model: NativeModelInfo;
 			adapter: string;
 			baseUrl: string;
+			id: string;
 		}> = [
-			{ model: model("openai", "gpt-5.5"), adapter: "openai", baseUrl: "https://gateway.example.com/v1/responses" },
+			{
+				model: model("openai", "gpt-5.5"),
+				adapter: "openai",
+				baseUrl: "https://gateway.example.com/v1/responses",
+				id: "subrequest",
+			},
 			{
 				model: model("anthropic", "claude-opus-5"),
 				adapter: "anthropic",
 				baseUrl: "https://gateway.example.com/v1/messages",
+				id: "subrequest",
 			},
-			{ model: model("xai", "grok-4.3"), adapter: "xai", baseUrl: "https://gateway.example.com/v1/responses" },
+			{
+				model: model("xai", "grok-4.3"),
+				adapter: "xai",
+				baseUrl: "https://gateway.example.com/v1/responses",
+				id: "subrequest",
+			},
 			{
 				model: model("perplexity", "sonar-pro"),
 				adapter: "perplexity",
 				baseUrl: "https://gateway.example.com/v1/chat/completions",
+				id: "subrequest",
 			},
-			{ model: model("zai", "glm-5"), adapter: "z-ai", baseUrl: "https://gateway.example.com/v1/chat/completions" },
+			{
+				model: model("zai", "glm-5"),
+				adapter: "z-ai",
+				baseUrl: "https://gateway.example.com/v1/chat/completions",
+				id: "subrequest",
+			},
 			{
 				model: model("kimi-coding", "k3", "https://api.kimi.com/coding"),
 				adapter: "kimi",
 				baseUrl: "https://api.kimi.com/coding/v1/search",
+				id: "api",
 			},
 			{
 				model: model("deepseek", "deepseek-v4", "https://api.deepseek.com/anthropic/v1", "anthropic-messages"),
 				adapter: "deepseek",
 				baseUrl: "https://api.deepseek.com/anthropic/v1/tools/search",
+				id: "api",
 			},
 			{
 				model: model("minimax-cn", "minimax-M2.5", "https://api.minimaxi.com/anthropic/v1"),
 				adapter: "minimax-cn",
 				baseUrl: "https://api.minimaxi.com/anthropic/v1/messages",
+				id: "subrequest",
 			},
 			{
 				model: model("zai-coding-cn", "glm-4.7", "https://open.bigmodel.cn/api/coding/paas/v4"),
 				adapter: "zai-coding-cn",
 				baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4/mcp/web_search_prime/mcp",
+				id: "mcp",
 			},
 		];
 
 		for (const testCase of cases) {
 			const entry = await buildNativeEntry(testCase.model, registry());
 			expect(entry).toEqual({
-				id: "native",
+				id: testCase.id,
 				provider: testCase.model.provider,
 				adapter: testCase.adapter,
 				apiKey: "native-test",
@@ -83,6 +105,15 @@ describe("active native route", () => {
 				priority: -1,
 			});
 		}
+	});
+
+	it("#given a MiniMax token plan key #when resolving #then labels the route as api", async () => {
+		const entry = await buildNativeEntry(
+			model("minimax-cn", "minimax-M2.5", "https://api.minimaxi.com/anthropic/v1"),
+			registry({ ok: true, apiKey: "sk-cp-test" }),
+		);
+
+		expect(entry).toMatchObject({ id: "api", provider: "minimax-cn", adapter: "minimax-cn" });
 	});
 
 	it("#given an OpenRouter upstream alias #when resolving #then uses OpenRouter transport and provenance", async () => {
@@ -200,11 +231,16 @@ describe("active native route", () => {
 
 describe("nativeMapping", () => {
 	it("#given provider aliases #when matching #then adapter is separate from transport provenance", () => {
-		expect(nativeMapping(model("zai", "glm-5"))).toEqual({ adapter: "z-ai", resource: "chat/completions" });
-		expect(nativeMapping(model("kimi-coding", "k3"))).toEqual({ adapter: "kimi", resource: "search" });
+		expect(nativeMapping(model("zai", "glm-5"))).toEqual({
+			adapter: "z-ai",
+			resource: "chat/completions",
+			id: "subrequest",
+		});
+		expect(nativeMapping(model("kimi-coding", "k3"))).toEqual({ adapter: "kimi", resource: "search", id: "api" });
 		expect(nativeMapping(model("openrouter", "openai/gpt-5.5"))).toEqual({
 			adapter: "openrouter",
 			resource: "chat/completions",
+			id: "subrequest",
 		});
 	});
 
@@ -212,14 +248,17 @@ describe("nativeMapping", () => {
 		expect(nativeMapping(model("minimax-cn", "minimax-M2.5"))).toEqual({
 			adapter: "minimax-cn",
 			resource: "messages",
+			id: "subrequest",
 		});
 		expect(nativeMapping(model("minimax-cn", "minimax-M3", "https://api.minimaxi.com/anthropic/v1"))).toEqual({
 			adapter: "minimax-cn",
 			resource: "messages",
+			id: "subrequest",
 		});
 		expect(nativeMapping(model("minimax", "MiniMax-M3", "https://api.minimax.io/anthropic"))).toEqual({
 			adapter: "minimax-cn",
 			resource: "messages",
+			id: "subrequest",
 		});
 	});
 
@@ -227,10 +266,12 @@ describe("nativeMapping", () => {
 		expect(nativeMapping(model("zai-coding-cn", "glm-4.7"))).toEqual({
 			adapter: "zai-coding-cn",
 			resource: "mcp/web_search_prime/mcp",
+			id: "mcp",
 		});
 		expect(nativeMapping(model("zai-coding", "glm-5"))).toEqual({
 			adapter: "zai-coding-cn",
 			resource: "mcp/web_search_prime/mcp",
+			id: "mcp",
 		});
 	});
 	it("#given any deepseek model #when matching #then routes to the standalone search api regardless of chat api", () => {
@@ -239,11 +280,13 @@ describe("nativeMapping", () => {
 		).toEqual({
 			adapter: "deepseek",
 			resource: "tools/search",
+			id: "api",
 		});
 		expect(nativeMapping(model("deepseek", "deepseek-v4", "https://api.deepseek.com", "openai-completions"))).toEqual(
 			{
 				adapter: "deepseek",
 				resource: "tools/search",
+				id: "api",
 			},
 		);
 	});
