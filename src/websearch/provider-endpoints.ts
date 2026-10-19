@@ -15,7 +15,7 @@ const DEFAULT_PROVIDER_URLS: Record<string, string> = {
 	perplexity: "https://api.perplexity.ai/search",
 	xai: "https://api.x.ai/v1/responses",
 	kimi: "https://api.kimi.com/coding/v1/search",
-	deepseek: "https://api.deepseek.com/anthropic/v1/messages",
+	deepseek: "https://api.deepseek.com/v1/tools/search",
 	"minimax-cn": "https://api.minimaxi.com/anthropic/v1/messages",
 	minimax: "https://api.minimax.io/anthropic/v1/messages",
 	"zai-coding-cn": "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",

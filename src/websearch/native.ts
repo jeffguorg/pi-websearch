@@ -54,10 +54,10 @@ function directNativeMapping(model: NativeModelInfo): NativeProviderMapping | nu
 		return { adapter: "kimi", resource: "search" };
 	}
 
-	// The current DeepSeek adapter emits Anthropic Messages payloads. Do not
-	// claim support for OpenAI Responses until a separate adapter exists.
-	if (model.provider === "deepseek" && model.api === "anthropic-messages") {
-		return { adapter: "deepseek", resource: "messages" };
+	// DeepSeek's Search API is a standalone endpoint billed per request; it
+	// does not ride the chat protocol, so any DeepSeek model qualifies.
+	if (model.provider === "deepseek") {
+		return { adapter: "deepseek", resource: "tools/search" };
 	}
 
 	// All Zhipu Coding Plan models share the same remote web-search-prime MCP
@@ -161,6 +161,11 @@ function hasResolvedAuthentication(auth: Extract<NativeAuthResult, { ok: true }>
 	);
 }
 
+function xApiKeyHeader(headers: Record<string, string> | undefined): string | undefined {
+	const value = Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "x-api-key")?.[1];
+	return value?.trim() || undefined;
+}
+
 export type NativeRouteResolution =
 	| { kind: "unmatched" }
 	| { kind: "ready"; route: SearchRoute }
@@ -218,7 +223,18 @@ export async function resolveNativeEntry(
 			message: `Native search OAuth token could not be resolved for ${model.provider}/${model.id}`,
 		};
 	}
-	const resolvedApiKey = codexApiKey ?? auth.apiKey;
+	const deepseekApiKey =
+		mapping.adapter === "deepseek"
+			? (auth.apiKey ?? bearerToken(auth.headers) ?? xApiKeyHeader(auth.headers))
+			: undefined;
+	if (mapping.adapter === "deepseek" && !deepseekApiKey) {
+		return {
+			kind: "error",
+			provider: model.provider,
+			message: `Native search API key could not be resolved for ${model.provider}/${model.id}`,
+		};
+	}
+	const resolvedApiKey = codexApiKey ?? deepseekApiKey ?? auth.apiKey;
 	const resolvedHeaders = mapping.adapter === "openai-codex-responses" ? undefined : auth.headers;
 
 	return {

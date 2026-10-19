@@ -57,7 +57,7 @@ describe("active native route", () => {
 			{
 				model: model("deepseek", "deepseek-v4", "https://api.deepseek.com/anthropic/v1", "anthropic-messages"),
 				adapter: "deepseek",
-				baseUrl: "https://api.deepseek.com/anthropic/v1/messages",
+				baseUrl: "https://api.deepseek.com/anthropic/v1/tools/search",
 			},
 			{
 				model: model("minimax-cn", "minimax-M2.5", "https://api.minimaxi.com/anthropic/v1"),
@@ -146,7 +146,6 @@ describe("active native route", () => {
 		expect(await buildNativeEntry(model("openai-codex", "gpt-5.6-sol"), auth)).toBeNull();
 		expect(await buildNativeEntry(model("openai", "gpt-5.3-codex"), auth)).toBeNull();
 		expect(await buildNativeEntry(model("openai", "o3"), auth)).toBeNull();
-		expect(await buildNativeEntry(model("deepseek", "deepseek-v4", undefined, "openai-responses"), auth)).toBeNull();
 		expect(await buildNativeEntry(model("openrouter", "no-slash"), auth)).toBeNull();
 		expect(await buildNativeEntry(model("custom", "gpt-5.5"), auth)).toBeNull();
 	});
@@ -233,5 +232,19 @@ describe("nativeMapping", () => {
 			adapter: "zai-coding-cn",
 			resource: "mcp/web_search_prime/mcp",
 		});
+	});
+	it("#given any deepseek model #when matching #then routes to the standalone search api regardless of chat api", () => {
+		expect(
+			nativeMapping(model("deepseek", "deepseek-v4", "https://api.deepseek.com/anthropic/v1", "anthropic-messages")),
+		).toEqual({
+			adapter: "deepseek",
+			resource: "tools/search",
+		});
+		expect(nativeMapping(model("deepseek", "deepseek-v4", "https://api.deepseek.com", "openai-completions"))).toEqual(
+			{
+				adapter: "deepseek",
+				resource: "tools/search",
+			},
+		);
 	});
 });

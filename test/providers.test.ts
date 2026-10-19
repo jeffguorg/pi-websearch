@@ -570,6 +570,39 @@ describe("buildSearchRequest", () => {
 			timeout_seconds: 30,
 		});
 	});
+
+	it("#given deepseek config #when building request #then posts to the standalone search api with bearer token", () => {
+		// given
+		const config: SearchProviderConfig = { provider: "deepseek", apiKey: "deepseek-test" };
+
+		// when
+		const request = buildSearchRequest({ ...config, maxResults: 5 }, { query: "current docs" });
+
+		// then
+		expect(request.url).toBe("https://api.deepseek.com/v1/tools/search");
+		expect(request.init.method).toBe("POST");
+		expect(request.init.headers).toHaveProperty("Authorization", "Bearer deepseek-test");
+		expect(request.body).toEqual({ query: "current docs", count: 5 });
+	});
+
+	it("#given deepseek native chat baseUrl #when building request #then rebases onto the search endpoint", () => {
+		// given
+		const config: SearchProviderConfig = {
+			provider: "deepseek",
+			apiKey: "deepseek-test",
+			baseUrl: "https://api.deepseek.com/anthropic/v1/tools/search",
+		};
+
+		// when
+		const request = buildSearchRequest(
+			{ ...config, maxResults: 5 },
+			{ query: "current docs", blockedDomains: ["spam.example.com"] },
+		);
+
+		// then
+		expect(request.url).toBe("https://api.deepseek.com/v1/tools/search");
+		expect(request.body).toEqual({ query: "current docs -site:spam.example.com", count: 5 });
+	});
 });
 
 describe("provider registration", () => {
@@ -905,6 +938,38 @@ describe("normalizeSearchResponse", () => {
 
 		// then
 		expect(results).toEqual([{ title: "Kimi Result", url: "https://kimi.example.com", snippet: "Kimi snippet" }]);
+	});
+
+	it("#given deepseek response #when normalizing #then maps results with scores", () => {
+		// given
+		const payload = {
+			results: [
+				{
+					title: "DeepSeek Docs",
+					url: "https://api-docs.deepseek.com",
+					snippet: "Search docs",
+					summary: "Long summary",
+					rerank_score: 2.4,
+					site_name: "DeepSeek",
+					date: "2026-06-01T00:00:00+00:00",
+				},
+			],
+		};
+
+		// when
+		const results = normalizeSearchResponse("deepseek", payload);
+
+		// then
+		expect(results).toEqual([
+			{
+				title: "DeepSeek Docs",
+				url: "https://api-docs.deepseek.com",
+				snippet: "Search docs",
+				source: "DeepSeek",
+				score: 2.4,
+				publishedAt: "2026-06-01T00:00:00+00:00",
+			},
+		]);
 	});
 });
 
