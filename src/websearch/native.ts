@@ -70,8 +70,19 @@ function directNativeMapping(model: NativeModelInfo): NativeProviderMapping | nu
 		return subrequest("perplexity", "chat/completions");
 	}
 
-	if ((model.provider === "z-ai" || model.provider === "zai") && /^glm-/.test(model.id)) {
-		return subrequest("z-ai", "chat/completions");
+	// Z.AI / Zhipu / GLM family: decide by provider id and baseUrl.
+	// - coding/paas endpoints (pi's current zai and zai-coding-cn) use the remote MCP server.
+	// - plain paas endpoints use the REST web_search API.
+	const isZaiFamily =
+		model.provider.includes("z-ai") ||
+		model.provider.includes("zai") ||
+		model.provider.includes("zhipu") ||
+		model.provider.includes("glm");
+	if (isZaiFamily) {
+		if (model.baseUrl.includes("/api/coding/paas/")) {
+			return mcp("zai-coding-cn", "mcp/web_search_prime/mcp");
+		}
+		return api("z-ai", "web_search");
 	}
 
 	if (model.provider === "kimi-coding") {
@@ -82,13 +93,6 @@ function directNativeMapping(model: NativeModelInfo): NativeProviderMapping | nu
 	// does not ride the chat protocol, so any DeepSeek model qualifies.
 	if (model.provider === "deepseek") {
 		return api("deepseek", "tools/search");
-	}
-
-	// All Zhipu Coding Plan models share the same remote web-search-prime MCP
-	// server; the adapter ignores the chat baseUrl and always targets the MCP
-	// endpoint, consuming the plan's bundled MCP quota.
-	if (model.provider === "zai-coding-cn" || model.provider === "zai-coding") {
-		return mcp("zai-coding-cn", "mcp/web_search_prime/mcp");
 	}
 
 	// All MiniMax models share the same adapter; the provider module dispatches

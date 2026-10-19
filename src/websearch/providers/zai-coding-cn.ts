@@ -19,10 +19,15 @@ function parseToolPayload(text: string): JsonValue[] {
 }
 
 /** Native routes resolve baseUrl from the model's chat endpoint, which is not
- *  the MCP endpoint. Trust config.baseUrl only when it explicitly targets the
- *  MCP server path (manual providers entries, api.z.ai global host). */
+ *  the MCP endpoint. Derive the correct MCP host from the chat endpoint hostname
+ *  (global api.z.ai vs china open.bigmodel.cn). Trust an explicit MCP path as-is. */
 function resolveBaseUrl(configured: string | undefined): string {
-	return configured?.includes("/api/mcp/") ? configured : DEFAULT_BASE_URL;
+	if (configured?.includes("/api/mcp/")) return configured;
+	if (configured?.includes("/api/coding/paas/")) {
+		if (configured.includes("api.z.ai")) return "https://api.z.ai/api/mcp/web_search_prime/mcp";
+		if (configured.includes("open.bigmodel.cn")) return "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp";
+	}
+	return DEFAULT_BASE_URL;
 }
 
 function textOf(value: JsonValue | undefined): string | undefined {

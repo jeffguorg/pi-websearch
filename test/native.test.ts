@@ -62,10 +62,10 @@ describe("active native route", () => {
 				id: "subrequest",
 			},
 			{
-				model: model("zai", "glm-5"),
-				adapter: "z-ai",
-				baseUrl: "https://gateway.example.com/v1/chat/completions",
-				id: "subrequest",
+				model: model("zai", "glm-5", "https://api.z.ai/api/coding/paas/v4"),
+				adapter: "zai-coding-cn",
+				baseUrl: "https://api.z.ai/api/coding/paas/v4/mcp/web_search_prime/mcp",
+				id: "mcp",
 			},
 			{
 				model: model("kimi-coding", "k3", "https://api.kimi.com/coding"),
@@ -231,16 +231,28 @@ describe("active native route", () => {
 
 describe("nativeMapping", () => {
 	it("#given provider aliases #when matching #then adapter is separate from transport provenance", () => {
-		expect(nativeMapping(model("zai", "glm-5"))).toEqual({
-			adapter: "z-ai",
-			resource: "chat/completions",
-			id: "subrequest",
+		expect(nativeMapping(model("zai", "glm-5", "https://api.z.ai/api/coding/paas/v4"))).toEqual({
+			adapter: "zai-coding-cn",
+			resource: "mcp/web_search_prime/mcp",
+			id: "mcp",
 		});
-		expect(nativeMapping(model("kimi-coding", "k3"))).toEqual({ adapter: "kimi", resource: "search", id: "api" });
 		expect(nativeMapping(model("openrouter", "openai/gpt-5.5"))).toEqual({
 			adapter: "openrouter",
 			resource: "chat/completions",
 			id: "subrequest",
+		});
+	});
+
+	it("#given a Z.AI pay-as-you-go endpoint #when matching #then routes to the REST web_search API", () => {
+		expect(nativeMapping(model("zai", "glm-5", "https://api.z.ai/api/paas/v4"))).toEqual({
+			adapter: "z-ai",
+			resource: "web_search",
+			id: "api",
+		});
+		expect(nativeMapping(model("zai-cn", "glm-5", "https://open.bigmodel.cn/api/paas/v4"))).toEqual({
+			adapter: "z-ai",
+			resource: "web_search",
+			id: "api",
 		});
 	});
 
@@ -263,12 +275,12 @@ describe("nativeMapping", () => {
 	});
 
 	it("#given any zai-coding-cn model #when matching #then routes to the web-search-prime MCP adapter regardless of model id", () => {
-		expect(nativeMapping(model("zai-coding-cn", "glm-4.7"))).toEqual({
+		expect(nativeMapping(model("zai-coding-cn", "glm-4.7", "https://open.bigmodel.cn/api/coding/paas/v4"))).toEqual({
 			adapter: "zai-coding-cn",
 			resource: "mcp/web_search_prime/mcp",
 			id: "mcp",
 		});
-		expect(nativeMapping(model("zai-coding", "glm-5"))).toEqual({
+		expect(nativeMapping(model("zai-coding", "glm-5", "https://open.bigmodel.cn/api/coding/paas/v4"))).toEqual({
 			adapter: "zai-coding-cn",
 			resource: "mcp/web_search_prime/mcp",
 			id: "mcp",
